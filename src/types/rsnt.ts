@@ -1,95 +1,88 @@
 /**
- * Recursive Semantic Node Tree (RSNT) Types
+ * Simplified RSNT for MVP - References actual Figma assets
  */
-// types/rsnt.ts
 
-export type LayoutRole =
-    | "Desktop"
-    | "Page"
-    | "Sidebar"
-    | "MainArea"
-    | "Content"
-    | "Header"
-    | "Footer"
-    | "Navigation"
-    | "Grid"
-    | "CardGrid";
-
-export type SemanticRole =
-    | ButtonRole
-    | FormRole
-    | LayoutRole
-    | TypographyRole
-    | string;
-
-export type ButtonRole = "PrimaryButton" | "SecondaryButton" | "GhostButton";
-export type FormRole = "Form" | "FormField" | "Input" | "Label";
-export type TypographyRole = "Heading" | "Paragraph";
-
-export type LayoutPrimitive = "stack-v" | "stack-h" | "flex-center" | string;
-
-export type SizingConstraint = 'hug' | 'fill' | 'fixed';
+export type NodeType = 'COMPONENT_INSTANCE' | 'FRAME' | 'TEXT';
 
 export interface RSNT_Node {
     id: string;
-    semanticRole: SemanticRole;
-    layoutPrimitive: LayoutPrimitive;
-    tailwindClasses: string[];
-    props: Record<string, any>;
-    children?: RSNT_Node[];
-    constraints: {
-        width: SizingConstraint;
-        height: SizingConstraint;
+    type: NodeType;
+
+    // For COMPONENT_INSTANCE
+    componentId?: string;
+    properties?: Record<string, string>;
+
+    // For FRAME
+    layoutMode?: 'HORIZONTAL' | 'VERTICAL' | 'NONE';
+    primaryAxisAlignItems?: 'MIN' | 'CENTER' | 'MAX' | 'SPACE_BETWEEN';
+    counterAxisAlignItems?: 'MIN' | 'CENTER' | 'MAX';
+    itemSpacing?: number | { variableId: string };
+    padding?: {
+        top?: number | { variableId: string };
+        right?: number | { variableId: string };
+        bottom?: number | { variableId: string };
+        left?: number | { variableId: string };
     };
+
+    // For TEXT
+    characters?: string;
+    fontSize?: number;
+
+    // Styling (for any type)
+    fills?: Array<{
+        type: 'SOLID' | 'VARIABLE';
+        color?: { r: number; g: number; b: number };
+        variableId?: string;
+    }>;
+    strokes?: Array<{
+        type: 'SOLID';
+        color: { r: number; g: number; b: number };
+    }>;
+    cornerRadius?: number | { variableId: string };
+
+    // Layout constraints
+    constraints?: {
+        horizontal: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE';
+        vertical: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE';
+    };
+
+    // Children
+    children?: RSNT_Node[];
+
+    // Metadata
+    name?: string;
 }
 
-/**
- * Validation result structure
- */
 export interface ValidationResult {
     valid: boolean;
     errors: string[];
 }
 
 /**
- * Validates an RSNT node tree for required fields and logical consistency.
- * Also checks for circular references.
+ * Basic validation - just check required fields
  */
-export function validateRSNT(node: RSNT_Node, visited: Set<RSNT_Node> = new Set()): ValidationResult {
-    const result: ValidationResult = {
-        valid: true,
-        errors: []
-    };
+export function validateRSNT(node: RSNT_Node): ValidationResult {
+    const errors: string[] = [];
 
-    // 1. Recursive Check - Required fields
-    if (!node.id) result.errors.push(`Missing 'id' on node.`);
-    if (!node.semanticRole) result.errors.push(`Missing 'semanticRole' on node ${node.id || '(unknown)'}.`);
-    if (!node.layoutPrimitive) result.errors.push(`Missing 'layoutPrimitive' on node ${node.id || '(unknown)'}.`);
-    if (!node.constraints) {
-        result.errors.push(`Missing 'constraints' on node ${node.id || '(unknown)'}.`);
-    } else {
-        if (!node.constraints.width) result.errors.push(`Missing 'constraints.width' on node ${node.id || '(unknown)'}.`);
-        if (!node.constraints.height) result.errors.push(`Missing 'constraints.height' on node ${node.id || '(unknown)'}.`);
+    if (!node.id) errors.push('Missing id');
+    if (!node.type) errors.push('Missing type');
+
+    if (node.type === 'COMPONENT_INSTANCE' && !node.componentId) {
+        errors.push('COMPONENT_INSTANCE requires componentId');
     }
 
-    // 2. Circular Reference Detection
-    if (visited.has(node)) {
-        result.errors.push(`Circular reference detected at node ${node.id}.`);
-        result.valid = false;
-        return result;
-    }
-    visited.add(node);
-
-    // 3. Recursive validation of children
-    if (node.children && Array.isArray(node.children)) {
-        for (const child of node.children) {
-            const childResult = validateRSNT(child, new Set(visited));
+    // Validate children recursively
+    if (node.children) {
+        node.children.forEach((child, idx) => {
+            const childResult = validateRSNT(child);
             if (!childResult.valid) {
-                result.errors.push(...childResult.errors);
+                errors.push(`Child ${idx}: ${childResult.errors.join(', ')}`);
             }
-        }
+        });
     }
 
-    result.valid = result.errors.length === 0;
-    return result;
+    return {
+        valid: errors.length === 0,
+        errors
+    };
 }

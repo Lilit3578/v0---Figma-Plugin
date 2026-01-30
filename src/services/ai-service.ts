@@ -1,52 +1,141 @@
 import { RSNT_Node } from '../types/rsnt';
-import { RSNT_SYSTEM_PROMPT } from './prompts';
+import { DesignSystemInventory } from './auto-discovery';
 
-/**
- * AI Service using direct API calls
- */
-
-// Use gemini-2.5-flash - confirmed available via API listing
-// This is the latest stable model (June 2025) with proper free tier quotas
-// gemini-2.0-flash-lite has 0 quota limit on free tier!
 const MODEL_NAME = 'gemini-2.5-flash';
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+/**
+ * Generate smart prompt based on discovered inventory
+ */
+function generateSmartPrompt(intent: string, inventory: DesignSystemInventory): string {
+    const hasComponents = inventory.components.length > 0;
+    const hasVariables = inventory.variables.length > 0;
+
+    return `You are creating a Figma design structure. You must use ONLY the assets available in this specific file.
+
+AVAILABLE COMPONENTS (${inventory.components.length}):
+${inventory.components.map(c => `
+- ID: "${c.id}"
+  Name: "${c.name}"
+  Type: ${c.type}
+  ${c.variantProperties ? `Properties: ${JSON.stringify(c.variantProperties, null, 2)}` : 'No variants'}
+  ${c.description ? `Description: ${c.description}` : ''}
+`).join('\n')}
+
+AVAILABLE VARIABLES (${inventory.variables.length}):
+${inventory.variables.map(v => `
+- ID: "${v.id}"
+  Name: "${v.name}"
+  Type: ${v.resolvedType}
+  Value: ${JSON.stringify(v.value)}
+`).join('\n')}
+
+USER REQUEST: "${intent}"
+
+CRITICAL INSTRUCTIONS:
+1. Use ONLY component IDs from the list above
+1. Use type: "FRAME", "TEXT", or "COMPONENT_INSTANCE"
+2. Use ONLY variable IDs from the list above for colors, spacing, etc.
+3. If using absolute colors, use hex format: "#RRGGBB"
+4. Component properties must EXACTLY match the variant property names above
+5. Return ONLY valid JSON, no markdown, no explanations, no code fences
+6. Omit optional fields if they are empty or default (like padding 0) to save space
+7. Do NOT truncate the JSON - return the complete structure
+
+EXPECTED OUTPUT FORMAT EXAMPLE:
+{
+  "rsnt": {
+    "id": "root",
+    "type": "FRAME" | "COMPONENT_INSTANCE",
+    "componentId": "exact-component-id-from-above",
+    "properties": { "PropertyName": "value" },
+    "layoutMode": "VERTICAL" | "HORIZONTAL",
+    "itemSpacing": 16,
+    "padding": { "top": 24, "right": 24, "bottom": 24, "left": 24 },
+    "fills": [{ "type": "VARIABLE", "variableId": "exact-variable-id" }],
+    "children": [
+      {
+        "id": "child-1",
+        "type": "COMPONENT_INSTANCE",
+        "componentId": "exact-component-id",
+        "properties": { "Variant": "value" }
+      }
+    ]
+  },
+  "confidence": 0.85,
+  "explanation": "Brief explanation of decisions"
+}
+
+${hasComponents ? 'PRIORITIZE using existing components over creating frames.' : 'No components found - build everything with frames and variables.'}
+${hasVariables ? 'PRIORITIZE binding to variables for colors, spacing, etc.' : 'No variables found - use hardcoded values as fallback.'}
+
+IMPORTANT: Return COMPLETE valid JSON without any markdown formatting or truncation.`;
+}
 
 /**
- * Generates an RSNT structure from user intent using Gemini.
+ * Extract JSON from AI response (handles markdown code blocks)
  */
-export async function generateRSNT(userIntent: string, apiKey: string, retryCount = 0): Promise<RSNT_Node> {
-    // Reduced from 3 to 2 to save quota
-    const MAX_RETRIES = 2;
-
-    if (!apiKey) {
-        throw new Error('MISSING_API_KEY: Gemini API key is missing. Please add it to Settings.');
+function extractJSON(text: string): any {
+    // Clean up response: remove potential markdown fences if extractJSON is called on raw text
+    let cleaned = text.trim();
+    if (cleaned.startsWith('```')) {
+        const lines = cleaned.split('\n');
+        if (lines[0].startsWith('```')) lines.shift();
+        if (lines[lines.length - 1].startsWith('```')) lines.pop();
+        cleaned = lines.join('\n').trim();
     }
 
-    if (!apiKey.startsWith('AIza')) {
-        throw new Error('INVALID_API_KEY: The API key format appears incorrect. Please check your key.');
+    // Find the first { and last } to isolate the JSON object
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+
+    if (firstBrace === -1 || lastBrace === -1) {
+        throw new Error('No JSON object found in response');
     }
+
+    const jsonString = cleaned.substring(firstBrace, lastBrace + 1);
+
+    // Try to parse
+    try {
+        return JSON.parse(jsonString);
+    } catch (error: any) {
+        // Log the problematic JSON for debugging
+        console.error('Failed to parse JSON:', jsonString);
+        throw new Error(`JSON parsing failed: ${error.message}. Check console for details.`);
+    }
+}
+
+/**
+ * Generate RSNT from user intent using discovered inventory
+ */
+export async function generateRSNT(
+    userIntent: string,
+    apiKey: string,
+    inventory: DesignSystemInventory
+): Promise<RSNT_Node> {
+
+    if (!apiKey || !apiKey.startsWith('AIza')) {
+        throw new Error('INVALID_API_KEY: Please provide a valid Gemini API key');
+    }
+
+    const prompt = generateSmartPrompt(userIntent, inventory);
+
+    console.log('Sending to AI:', {
+        intent: userIntent,
+        componentsAvailable: inventory.components.length,
+        variablesAvailable: inventory.variables.length
+    });
 
     try {
-        const prompt = `System Instructions: ${RSNT_SYSTEM_PROMPT}\n\nUser Request: "${userIntent}"\nGenerate the RSNT JSON:`;
-
-        // Direct API call using v1beta endpoint for JSON Mode support
         const response = await fetch(
             `https://generativelanguage.googleapis.com/v1/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
             {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{
-                        parts: [{
-                            text: prompt
-                        }]
-                    }],
+                    contents: [{ parts: [{ text: prompt }] }],
                     generationConfig: {
-                        temperature: 0.6,
-                        maxOutputTokens: 2048
+                        temperature: 0.7,
+                        maxOutputTokens: 8192 // Increased from 4096 to allow larger responses
                     }
                 })
             }
@@ -54,15 +143,14 @@ export async function generateRSNT(userIntent: string, apiKey: string, retryCoun
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('API Error Response:', errorText);
+            console.error('API Error:', errorText);
 
-            // Better error messages for common issues
             if (response.status === 429) {
-                throw new Error(`RATE_LIMIT: You've exceeded the API quota. Free tier: 15 requests/min, 1M tokens/day.`);
+                throw new Error('RATE_LIMIT: API quota exceeded. Please wait and try again.');
             } else if (response.status === 403) {
-                throw new Error(`INVALID_API_KEY: API key is invalid or doesn't have access to Gemini API.`);
-            } else if (response.status === 404) {
-                throw new Error(`MODEL_NOT_FOUND: Model "${MODEL_NAME}" not available. Check your API tier.`);
+                throw new Error('INVALID_API_KEY: API key is invalid or lacks permissions.');
+            } else if (response.status === 400) {
+                throw new Error('BAD_REQUEST: Invalid request format. Check console for details.');
             }
 
             throw new Error(`API_ERROR: ${response.status} - ${errorText}`);
@@ -70,70 +158,43 @@ export async function generateRSNT(userIntent: string, apiKey: string, retryCoun
 
         const data = await response.json();
 
-        // Extract text from response
+        // Check for API-level errors
+        if (data.error) {
+            throw new Error(`API Error: ${data.error.message}`);
+        }
+
         const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
         if (!text) {
-            console.error('Unexpected API response structure:', data);
-            throw new Error('API returned unexpected response structure');
+            console.error('Unexpected API response structure:', JSON.stringify(data, null, 2));
+            throw new Error('API returned empty response. Check console for details.');
         }
 
-        console.log('Gemini response:', text);
+        console.log('AI Response received, length:', text.length, 'characters');
+        console.log('First 300 chars:', text.substring(0, 300));
+        console.log('Last 100 chars:', text.substring(text.length - 100));
 
-        // Clean and parse JSON - improved regex
-        let jsonString = text.trim();
+        // Extract and parse JSON
+        const parsed = extractJSON(text);
 
-        // Remove markdown code blocks
-        jsonString = jsonString.replace(/```json\s*/g, '').replace(/```\s*/g, '');
-
-        // Remove any leading/trailing text that's not JSON
-        const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            jsonString = jsonMatch[0];
+        if (!parsed.rsnt) {
+            console.error('Parsed response:', JSON.stringify(parsed, null, 2));
+            throw new Error('Response missing rsnt property. Check console for parsed response.');
         }
 
-        try {
-            const parsed: RSNT_Node = JSON.parse(jsonString);
+        console.log('Successfully parsed RSNT with',
+            parsed.rsnt.children ? parsed.rsnt.children.length : 0,
+            'children'
+        );
 
-            // Basic schema validation
-            if (!parsed.id || !parsed.semanticRole || !parsed.layoutPrimitive) {
-                throw new Error('Missing required RSNT fields (id, semanticRole, or layoutPrimitive)');
-            }
-
-            return parsed;
-        } catch (parseError) {
-            console.error('Failed to parse JSON:', text);
-            throw new Error(`INVALID_JSON: AI returned unparsable response.\n\nAI returned: "${text.substring(0, 200)}..."`);
-        }
+        return parsed.rsnt as RSNT_Node;
 
     } catch (error: any) {
-        const isRateLimited = error.message?.includes('429') ||
-            error.message?.includes('RATE_LIMIT') ||
-            error.status === 429;
-        const isQuotaError = error.message?.includes('quota') ||
-            error.message?.includes('RESOURCE_EXHAUSTED');
+        console.error('AI Generation Error:', error);
 
-        // Don't retry on quota/auth errors
-        if (isQuotaError || error.message?.includes('INVALID_API_KEY')) {
-            throw error;
-        }
-
-        if (retryCount < MAX_RETRIES) {
-            // Exponential backoff with jitter (prevents thundering herd)
-            const baseDelay = Math.pow(2, retryCount) * 1000;
-            const jitter = Math.random() * 1000;
-            const waitTime = isRateLimited ? baseDelay + jitter : 500 + jitter;
-
-            console.warn(`Attempt ${retryCount + 1} failed. Retrying in ${Math.round(waitTime)}ms...`, error.message);
-
-            await sleep(waitTime);
-            return generateRSNT(userIntent, apiKey, retryCount + 1);
-        }
-
-        console.error('AI Generation Error after retries:', error);
-
-        if (isRateLimited) {
-            throw new Error(`RATE_LIMIT: Gemini API rate limit exceeded. Free tier allows 15 requests/minute. Please wait 60 seconds.`);
+        // Provide more helpful error messages
+        if (error.message.includes('JSON')) {
+            throw new Error(`Failed to parse AI response. The AI may have returned incomplete JSON. Try a simpler request or check your API key quota.`);
         }
 
         throw new Error(`AI_FAILURE: ${error.message}`);

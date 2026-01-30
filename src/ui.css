@@ -1,12 +1,12 @@
 :root {
-  --figma-color-bg: #ffffff;
-  --figma-color-text: #333333;
-  --figma-color-border: #e6e6e6;
-  --figma-color-blue: #18a0fb;
-  --figma-color-blue-hover: #0d8de3;
-  --figma-color-danger: #f24822;
-  --figma-color-success: #14ae5c;
-  --figma-color-secondary: #f0f0f0;
+  --bg: #ffffff;
+  --text: #333333;
+  --border: #e6e6e6;
+  --primary: #18a0fb;
+  --primary-hover: #0d8de3;
+  --danger: #f24822;
+  --success: #14ae5c;
+  --secondary: #f0f0f0;
 }
 
 * {
@@ -16,38 +16,76 @@
 }
 
 body {
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 11px;
-  color: var(--figma-color-text);
-  background-color: var(--figma-color-bg);
+  color: var(--text);
+  background: var(--bg);
+}
+
+.container {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+}
+
+h1 {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #666;
 }
 
 textarea {
   width: 100%;
-  height: 100px;
+  min-height: 100px;
   padding: 8px;
-  border: 1px solid var(--figma-color-border);
-  border-radius: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
   font-family: inherit;
   font-size: 11px;
-  resize: none;
+  resize: vertical;
   outline: none;
 }
 
 textarea:focus {
-  border-color: var(--figma-color-blue);
+  border-color: var(--primary);
+}
+
+#char-counter {
+  text-align: right;
+  font-size: 10px;
+  color: #999;
+}
+
+input[type="password"] {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 11px;
+  outline: none;
+}
+
+input[type="password"]:focus {
+  border-color: var(--primary);
 }
 
 button {
-  background-color: var(--figma-color-blue);
-  color: white;
+  padding: 8px 16px;
   border: none;
   border-radius: 6px;
-  padding: 8px 16px;
   font-family: inherit;
   font-size: 11px;
   font-weight: 500;
@@ -55,184 +93,89 @@ button {
   transition: background-color 0.2s;
 }
 
-button:hover {
-  background-color: var(--figma-color-blue-hover);
+button.primary {
+  background: var(--primary);
+  color: white;
+  width: 100%;
 }
 
-button:disabled {
+button.primary:hover:not(:disabled) {
+  background: var(--primary-hover);
+}
+
+button.primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
+button.secondary {
+  background: var(--secondary);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+button.secondary:hover {
+  background: #e6e6e6;
+}
+
 #status-area {
-  padding: 8px;
-  border-radius: 4px;
   display: none;
-}
-
-#status-area.error {
-  display: block;
-  background-color: #fff1f0;
-  color: var(--figma-color-danger);
-  border: 1px solid #ffa39e;
-  white-space: pre-line;
   padding: 12px;
-}
-
-#status-area.error button.secondary {
-  background-color: white;
-  border: 1px solid #ffa39e;
-  color: var(--figma-color-danger);
-  margin-top: 4px;
-}
-
-#status-area.error button.secondary:hover {
-  background-color: #fff1f0;
-}
-
-#status-area.success {
-  display: block;
-  background-color: #f6ffed;
-  color: var(--figma-color-success);
-  border: 1px solid #b7eb8f;
+  border-radius: 4px;
+  font-size: 11px;
 }
 
 #status-area.loading {
   display: block;
-  background-color: #e6f7ff;
-  color: var(--figma-color-blue);
+  background: #e6f7ff;
+  color: var(--primary);
   border: 1px solid #91d5ff;
 }
 
-#results-panel {
-  display: none;
-  border-top: 1px solid var(--figma-color-border);
-  padding-top: 12px;
-  margin-top: 4px;
-}
-
-#results-panel.visible {
+#status-area.success {
   display: block;
+  background: #f6ffed;
+  color: var(--success);
+  border: 1px solid #b7eb8f;
 }
 
-.results-header {
-  font-weight: 600;
-  margin-bottom: 4px;
+#status-area.error {
+  display: block;
+  background: #fff1f0;
+  color: var(--danger);
+  border: 1px solid #ffa39e;
 }
 
-/* Settings Styles */
-.settings-container {
-  margin-top: 16px;
-  margin-bottom: 16px;
-  border-top: 1px solid var(--figma-color-border);
-  padding-top: 12px;
+details {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px;
 }
 
-details summary {
-  font-size: 11px;
+summary {
   font-weight: 600;
   cursor: pointer;
-  color: var(--figma-color-text-secondary);
-  margin-bottom: 8px;
-  outline: none;
+  user-select: none;
 }
 
 .settings-content {
-  padding: 8px 0;
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-#api-key {
-  width: 100%;
-  padding: 8px;
-  border: 1px solid var(--figma-color-border);
-  border-radius: 4px;
-  background: var(--figma-color-bg-secondary);
-  color: var(--figma-color-text);
-  font-size: 11px;
 }
 
 .help-text {
   font-size: 10px;
-  color: var(--figma-color-text-secondary);
-  margin: 4px 0 0 0;
+  color: #999;
+  margin-top: 4px;
 }
 
 .help-text a {
-  color: var(--figma-color-text-brand);
+  color: var(--primary);
   text-decoration: none;
 }
 
-button.secondary {
-  background: var(--figma-color-bg-secondary);
-  color: var(--figma-color-text);
-  border: 1px solid var(--figma-color-border);
-  width: auto;
-  padding: 4px 12px;
-  align-self: flex-start;
-}
-
-button.secondary:hover {
-  background: var(--figma-color-bg-hover);
-}
-
-.result-item {
-  background-color: var(--figma-color-secondary);
-  padding: 8px;
-  border-radius: 4px;
-  margin-bottom: 4px;
-}
-
-/* Mapping UI Styles */
-.hidden {
-  display: none;
-}
-
-#mapping-panel {
-  margin-top: 12px;
-}
-
-#mapping-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.mapping-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px;
-  background: var(--figma-color-bg-secondary);
-  border-radius: 4px;
-}
-
-.mapping-row label {
-  flex: 1;
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.mapping-row select {
-  flex: 1.5;
-  padding: 4px 8px;
-  border: 1px solid var(--figma-color-border);
-  border-radius: 4px;
-  font-size: 11px;
-  background: white;
-  cursor: pointer;
-}
-
-.mapping-row select:focus {
-  outline: none;
-  border-color: var(--figma-color-blue);
-}
-
-#discover-btn {
-  width: 100%;
+.help-text a:hover {
+  text-decoration: underline;
 }

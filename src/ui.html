@@ -8,48 +8,38 @@
 </head>
 
 <body>
-    <textarea id="intent" placeholder="Describe what you want to create..." maxlength="500"></textarea>
-    <div id="char-counter"
-        style="text-align: right; font-size: 11px; color: #ffffff; margin-top: -8px; margin-bottom: 8px;">0 / 500
-        characters</div>
+    <div class="container">
+        <h1>Semantic Design Compiler</h1>
 
-    <button id="generate">Generate</button>
+        <div class="section">
+            <label for="intent">Describe what you want to create:</label>
+            <textarea id="intent" placeholder="Example: Create a login page with email, password, and submit button"
+                maxlength="500"></textarea>
+            <div id="char-counter">0 / 500 characters</div>
+        </div>
 
-    <div id="status-area"></div>
+        <button id="generate" class="primary">Generate Design</button>
+        <!-- Add this after the Generate button -->
+        <button id="refresh-inventory" class="secondary">🔄 Refresh Components & Variables</button>
 
-    <div class="settings-container">
-        <details open>
+        <div id="status-area"></div>
+
+        <details class="section">
             <summary>API Settings</summary>
             <div class="settings-content">
-                <input type="password" id="api-key" placeholder="Enter Gemini API Key">
+                <label for="api-key">Gemini API Key:</label>
+                <input type="password" id="api-key" placeholder="Enter your API key">
                 <button id="save-key" class="secondary">Save Key</button>
-                <p class="help-text">Get your key at <a href="https://aistudio.google.com/app/apikey"
-                        target="_blank">Google AI Studio</a></p>
-            </div>
-        </details>
-
-        <details id="mapping-section" open>
-            <summary>Component Mappings</summary>
-            <div class="settings-content">
-                <p class="help-text">Map semantic roles to your design system components</p>
-                <button id="discover-btn" class="secondary">Discover Components</button>
-                <div id="mapping-panel" class="hidden">
-                    <div id="mapping-list"></div>
-                    <button id="save-mappings-btn" class="secondary">Save Mappings</button>
-                </div>
+                <p class="help-text">
+                    Get your free API key at
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank">
+                        Google AI Studio
+                    </a>
+                </p>
             </div>
         </details>
     </div>
 
-    <div id="results-panel">
-        <div class="results-header">Generated Designs</div>
-        <div id="results-list"></div>
-    </div>
-
-    <!-- The build process should copy and potentially inline these, but basic Figma plugins 
-         often expect everything in one file. However, standard bundlers for Figma plugins 
-         (like the ones in many templates) allow this separation.
-         Since I'm asked for simple HTML/CSS/TS files, I'll provide them as requested. -->
     <script src="ui.js"></script>
 </body>
 
