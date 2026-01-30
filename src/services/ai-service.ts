@@ -1,75 +1,12 @@
 import { RSNT_Node } from '../types/rsnt';
 import { DesignSystemInventory } from './auto-discovery';
+import { componentSelector } from './component-selector';
+import { promptBuilder } from './prompt-builder';
+import { selectRelevantExamples } from './example-library';
+import { promptManager } from './prompt-manager';
+import { conversationManager } from './conversation-manager';
 
 const MODEL_NAME = 'gemini-2.5-flash';
-
-/**
- * Generate smart prompt based on discovered inventory
- */
-function generateSmartPrompt(intent: string, inventory: DesignSystemInventory): string {
-    const hasComponents = inventory.components.length > 0;
-    const hasVariables = inventory.variables.length > 0;
-
-    return `You are creating a Figma design structure. You must use ONLY the assets available in this specific file.
-
-AVAILABLE COMPONENTS (${inventory.components.length}):
-${inventory.components.map(c => `
-- ID: "${c.id}"
-  Name: "${c.name}"
-  Type: ${c.type}
-  ${c.variantProperties ? `Properties: ${JSON.stringify(c.variantProperties, null, 2)}` : 'No variants'}
-  ${c.description ? `Description: ${c.description}` : ''}
-`).join('\n')}
-
-AVAILABLE VARIABLES (${inventory.variables.length}):
-${inventory.variables.map(v => `
-- ID: "${v.id}"
-  Name: "${v.name}"
-  Type: ${v.resolvedType}
-  Value: ${JSON.stringify(v.value)}
-`).join('\n')}
-
-USER REQUEST: "${intent}"
-
-CRITICAL INSTRUCTIONS:
-1. Use ONLY component IDs from the list above
-1. Use type: "FRAME", "TEXT", or "COMPONENT_INSTANCE"
-2. Use ONLY variable IDs from the list above for colors, spacing, etc.
-3. If using absolute colors, use hex format: "#RRGGBB"
-4. Component properties must EXACTLY match the variant property names above
-5. Return ONLY valid JSON, no markdown, no explanations, no code fences
-6. Omit optional fields if they are empty or default (like padding 0) to save space
-7. Do NOT truncate the JSON - return the complete structure
-
-EXPECTED OUTPUT FORMAT EXAMPLE:
-{
-  "rsnt": {
-    "id": "root",
-    "type": "FRAME" | "COMPONENT_INSTANCE",
-    "componentId": "exact-component-id-from-above",
-    "properties": { "PropertyName": "value" },
-    "layoutMode": "VERTICAL" | "HORIZONTAL",
-    "itemSpacing": 16,
-    "padding": { "top": 24, "right": 24, "bottom": 24, "left": 24 },
-    "fills": [{ "type": "VARIABLE", "variableId": "exact-variable-id" }],
-    "children": [
-      {
-        "id": "child-1",
-        "type": "COMPONENT_INSTANCE",
-        "componentId": "exact-component-id",
-        "properties": { "Variant": "value" }
-      }
-    ]
-  },
-  "confidence": 0.85,
-  "explanation": "Brief explanation of decisions"
-}
-
-${hasComponents ? 'PRIORITIZE using existing components over creating frames.' : 'No components found - build everything with frames and variables.'}
-${hasVariables ? 'PRIORITIZE binding to variables for colors, spacing, etc.' : 'No variables found - use hardcoded values as fallback.'}
-
-IMPORTANT: Return COMPLETE valid JSON without any markdown formatting or truncation.`;
-}
 
 /**
  * Extract JSON from AI response (handles markdown code blocks)
@@ -96,10 +33,46 @@ function extractJSON(text: string): any {
 
     // Try to parse
     try {
-        return JSON.parse(jsonString);
+        const parsed = JSON.parse(jsonString);
+
+        // Validate structure
+        if (!parsed.rsnt) {
+            throw new Error('Response missing "rsnt" property');
+        }
+
+        // Check if rsnt is incorrectly an array
+        if (Array.isArray(parsed.rsnt)) {
+            console.error('AI returned rsnt as array instead of object:', parsed.rsnt);
+            throw new Error('Invalid response: "rsnt" must be an object, not an array. The AI may have misunderstood the format.');
+        }
+
+        // Check if rsnt is an object
+        if (typeof parsed.rsnt !== 'object' || parsed.rsnt === null) {
+            throw new Error('Invalid response: "rsnt" must be an object');
+        }
+
+        return parsed;
+
     } catch (error: any) {
         // Log the problematic JSON for debugging
         console.error('Failed to parse JSON:', jsonString);
+        console.error('Parse error:', error.message);
+
+        // Check if JSON appears incomplete
+        const openBraces = (jsonString.match(/{/g) || []).length;
+        const closeBraces = (jsonString.match(/}/g) || []).length;
+        const openBrackets = (jsonString.match(/\[/g) || []).length;
+        const closeBrackets = (jsonString.match(/]/g) || []).length;
+
+        if (openBraces !== closeBraces || openBrackets !== closeBrackets) {
+            throw new Error(
+                `JSON is incomplete/truncated. ` +
+                `Braces: ${openBraces} open vs ${closeBraces} close. ` +
+                `Brackets: ${openBrackets} open vs ${closeBrackets} close. ` +
+                `The AI response was cut off. Try a simpler request.`
+            );
+        }
+
         throw new Error(`JSON parsing failed: ${error.message}. Check console for details.`);
     }
 }
@@ -117,86 +90,106 @@ export async function generateRSNT(
         throw new Error('INVALID_API_KEY: Please provide a valid Gemini API key');
     }
 
-    const prompt = generateSmartPrompt(userIntent, inventory);
-
-    console.log('Sending to AI:', {
-        intent: userIntent,
-        componentsAvailable: inventory.components.length,
-        variablesAvailable: inventory.variables.length
+    console.log('=== AI Generation Start ===');
+    console.log('Intent:', userIntent);
+    console.log('Inventory:', {
+        components: inventory.components.length,
+        variables: inventory.variables.length,
+        hasGuidelines: !!inventory.guidelines
     });
 
-    try {
-        const response = await fetch(
-            `https://generativelanguage.googleapis.com/v1/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: {
-                        temperature: 0.7,
-                        maxOutputTokens: 8192 // Increased from 4096 to allow larger responses
-                    }
-                })
-            }
-        );
+    // 1. Select relevant components (max 20)
+    const selection = componentSelector.selectComponents(userIntent, inventory, 20);
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('API Error:', errorText);
+    console.log(`Component selection: ${selection.selected.length} selected, ${selection.excluded} excluded (strategy: ${selection.selectionStrategy})`);
 
-            if (response.status === 429) {
-                throw new Error('RATE_LIMIT: API quota exceeded. Please wait and try again.');
-            } else if (response.status === 403) {
-                throw new Error('INVALID_API_KEY: API key is invalid or lacks permissions.');
-            } else if (response.status === 400) {
-                throw new Error('BAD_REQUEST: Invalid request format. Check console for details.');
-            }
+    // 2. Select relevant examples (3 most similar)
+    const examples = selectRelevantExamples(userIntent, 3);
 
-            throw new Error(`API_ERROR: ${response.status} - ${errorText}`);
-        }
+    console.log(`Selected examples: ${examples.map(e => e.intent).join(', ')}`);
 
-        const data = await response.json();
+    // 3. Get conversation context
+    const conversationContext = conversationManager.getContext();
+    const isRefinement = conversationManager.isRefinement(userIntent);
 
-        // Check for API-level errors
-        if (data.error) {
-            throw new Error(`API Error: ${data.error.message}`);
-        }
-
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!text) {
-            console.error('Unexpected API response structure:', JSON.stringify(data, null, 2));
-            throw new Error('API returned empty response. Check console for details.');
-        }
-
-        console.log('AI Response received, length:', text.length, 'characters');
-        console.log('First 300 chars:', text.substring(0, 300));
-        console.log('Last 100 chars:', text.substring(text.length - 100));
-
-        // Extract and parse JSON
-        const parsed = extractJSON(text);
-
-        if (!parsed.rsnt) {
-            console.error('Parsed response:', JSON.stringify(parsed, null, 2));
-            throw new Error('Response missing rsnt property. Check console for parsed response.');
-        }
-
-        console.log('Successfully parsed RSNT with',
-            parsed.rsnt.children ? parsed.rsnt.children.length : 0,
-            'children'
-        );
-
-        return parsed.rsnt as RSNT_Node;
-
-    } catch (error: any) {
-        console.error('AI Generation Error:', error);
-
-        // Provide more helpful error messages
-        if (error.message.includes('JSON')) {
-            throw new Error(`Failed to parse AI response. The AI may have returned incomplete JSON. Try a simpler request or check your API key quota.`);
-        }
-
-        throw new Error(`AI_FAILURE: ${error.message}`);
+    if (conversationContext) {
+        console.log('Using conversation context (refinement mode)');
     }
+
+    // 4. Build prompt using active version
+    const version = promptManager.getActiveVersion();
+    const prompt = version.builder.build(
+        userIntent,
+        inventory,
+        selection.selected,
+        examples,
+        conversationContext  // NEW: Add conversation context
+    );
+
+    console.log(`Prompt version: ${version.version}`);
+    console.log(`Prompt size: ${prompt.length} characters`);
+    console.log(`Prompt tokens estimate: ${Math.ceil(prompt.length / 4)}`);
+
+    // 4. Call AI
+    const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [{ text: prompt }]
+                }],
+                generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 8192
+                }
+            })
+        }
+    );
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('AI API error:', errorText);
+
+        if (response.status === 400) {
+            throw new Error('INVALID_REQUEST: The request was malformed. Check your API key and try again.');
+        } else if (response.status === 429) {
+            throw new Error('RATE_LIMIT: Too many requests. Please wait a moment and try again.');
+        } else if (response.status === 403) {
+            throw new Error('INVALID_API_KEY: API key is invalid or doesn\'t have access to Gemini API.');
+        }
+
+        throw new Error(`AI_ERROR: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+
+    console.log('AI Response received:', {
+        candidates: data.candidates?.length || 0,
+        finishReason: data.candidates?.[0]?.finishReason
+    });
+
+    if (!data.candidates || data.candidates.length === 0) {
+        throw new Error('AI_NO_RESPONSE: The AI did not generate any response. Try rephrasing your request.');
+    }
+
+    const candidate = data.candidates[0];
+
+    if (candidate.finishReason === 'SAFETY') {
+        throw new Error('SAFETY_FILTER: The AI blocked this request due to safety filters. Try a different description.');
+    }
+
+    if (!candidate.content?.parts?.[0]?.text) {
+        throw new Error('AI_EMPTY_RESPONSE: The AI response was empty. Try again or rephrase your request.');
+    }
+
+    const aiText = candidate.content.parts[0].text;
+    console.log('AI generated text length:', aiText.length);
+
+    // Parse the JSON response
+    const parsed = extractJSON(aiText);
+    console.log('Parsed RSNT successfully');
+
+    return parsed.rsnt;
 }

@@ -179,3 +179,145 @@ summary {
 .help-text a:hover {
   text-decoration: underline;
 }
+
+/* Cooldown timer */
+#cooldown-timer {
+  text-align: center;
+  padding: 8px;
+  margin-top: 8px;
+  background: #fff7e6;
+  color: #d46b08;
+  border: 1px solid #ffd591;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+}
+
+/* Structured error display */
+.error-details {
+  text-align: left;
+}
+
+.error-details h3 {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--danger);
+}
+
+.error-details p {
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+
+.error-details .suggestions {
+  margin-top: 12px;
+  padding: 8px;
+  background: #fffbe6;
+  border-left: 3px solid #faad14;
+  border-radius: 2px;
+}
+
+.error-details .suggestions strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 10px;
+  color: #d48806;
+}
+
+.error-details .suggestions ul {
+  margin-left: 16px;
+  margin-top: 4px;
+}
+
+.error-details .suggestions li {
+  margin-bottom: 4px;
+  line-height: 1.4;
+  font-size: 10px;
+}
+
+.error-details .technical-details {
+  margin-top: 12px;
+  font-size: 10px;
+}
+
+.error-details .technical-details summary {
+  color: #666;
+  font-size: 10px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.error-details .technical-details pre {
+  margin-top: 8px;
+  padding: 8px;
+  background: #f5f5f5;
+  border-radius: 2px;
+  font-family: 'Monaco', 'Courier New', monospace;
+  font-size: 9px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  color: #666;
+}
+
+/* Progress bar */
+.progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-text {
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: #e6e6e6;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.3s ease;
+}
+
+.progress-percent {
+  font-size: 10px;
+  color: #999;
+  text-align: right;
+}
+
+/* History controls */
+.history-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.history-btn {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 11px;
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.history-btn:hover:not(:disabled) {
+  background: #e8e8e8;
+  border-color: #ccc;
+}
+
+.history-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

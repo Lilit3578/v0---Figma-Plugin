@@ -11,14 +11,18 @@
     <div class="container">
         <h1>Semantic Design Compiler</h1>
 
-        <div class="section">
-            <label for="intent">Describe what you want to create:</label>
-            <textarea id="intent" placeholder="Example: Create a login page with email, password, and submit button"
-                maxlength="500"></textarea>
-            <div id="char-counter">0 / 500 characters</div>
+        <div class="input-group">
+            <input type="text" id="intent-input" placeholder="Describe what you want to create..." />
+            <button id="generate-btn">Generate</button>
         </div>
 
-        <button id="generate" class="primary">Generate Design</button>
+        <div class="history-controls">
+            <button id="undo-btn" class="history-btn" disabled>← Undo</button>
+            <button id="redo-btn" class="history-btn" disabled>Redo →</button>
+            <button id="clear-conv-btn" class="history-btn">Clear Conversation</button>
+        </div>
+
+        <div id="cooldown-timer" style="display: none;"></div>
         <!-- Add this after the Generate button -->
         <button id="refresh-inventory" class="secondary">🔄 Refresh Components & Variables</button>
 
