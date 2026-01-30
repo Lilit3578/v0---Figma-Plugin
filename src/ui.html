@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="ui.css">
+</head>
+
+<body>
+    <textarea id="intent" placeholder="Describe what you want to create..." maxlength="500"></textarea>
+    <div id="char-counter"
+        style="text-align: right; font-size: 11px; color: #ffffff; margin-top: -8px; margin-bottom: 8px;">0 / 500
+        characters</div>
+
+    <button id="generate">Generate</button>
+
+    <div id="status-area"></div>
+
+    <div class="settings-container">
+        <details open>
+            <summary>API Settings</summary>
+            <div class="settings-content">
+                <input type="password" id="api-key" placeholder="Enter Gemini API Key">
+                <button id="save-key" class="secondary">Save Key</button>
+                <p class="help-text">Get your key at <a href="https://aistudio.google.com/app/apikey"
+                        target="_blank">Google AI Studio</a></p>
+            </div>
+        </details>
+
+        <details id="mapping-section" open>
+            <summary>Component Mappings</summary>
+            <div class="settings-content">
+                <p class="help-text">Map semantic roles to your design system components</p>
+                <button id="discover-btn" class="secondary">Discover Components</button>
+                <div id="mapping-panel" class="hidden">
+                    <div id="mapping-list"></div>
+                    <button id="save-mappings-btn" class="secondary">Save Mappings</button>
+                </div>
+            </div>
+        </details>
+    </div>
+
+    <div id="results-panel">
+        <div class="results-header">Generated Designs</div>
+        <div id="results-list"></div>
+    </div>
+
+    <!-- The build process should copy and potentially inline these, but basic Figma plugins 
+         often expect everything in one file. However, standard bundlers for Figma plugins 
+         (like the ones in many templates) allow this separation.
+         Since I'm asked for simple HTML/CSS/TS files, I'll provide them as requested. -->
+    <script src="ui.js"></script>
+</body>
+
+</html>

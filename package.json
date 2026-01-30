@@ -1,0 +1,34 @@
+{
+  "name": "semantic-design-compiler",
+  "version": "1.0.0",
+  "description": "Convert text to Figma designs using Google Gemini AI",
+  "scripts": {
+    "build": "npm run bundle && npm run copy-html",
+    "bundle": "esbuild src/main.ts src/ui.ts --bundle --outdir=dist --target=es6",
+    "copy-html": "cp src/ui.html dist/ui.html && cp src/ui.css dist/ui.css && node inline-ui.js",
+    "dev": "npm run build && esbuild src/main.ts src/ui.ts --bundle --outdir=dist --target=es6 --watch"
+  },
+  "keywords": [
+    "figma",
+    "plugin",
+    "ai",
+    "gemini",
+    "design"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.98.0",
+    "@types/node": "^20.0.0",
+    "@types/react": "^19.2.10",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  }
+}
