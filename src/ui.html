@@ -24,7 +24,11 @@
 
         <div id="cooldown-timer" style="display: none;"></div>
         <!-- Add this after the Generate button -->
+        <!-- Add this after the Generate button -->
         <button id="refresh-inventory" class="secondary">🔄 Refresh Components & Variables</button>
+        <div id="cache-stats"
+            style="font-size: 11px; color: var(--figma-color-text-tertiary); text-align: center; margin-top: 4px; display: none;">
+        </div>
 
         <div id="status-area"></div>
 
@@ -34,6 +38,14 @@
                 <label for="api-key">Gemini API Key:</label>
                 <input type="password" id="api-key" placeholder="Enter your API key">
                 <button id="save-key" class="secondary">Save Key</button>
+
+                <div class="separator" style="margin: 12px 0; border-bottom: 1px solid var(--figma-color-border);">
+                </div>
+
+                <label>Troubleshooting:</label>
+                <button id="force-refresh-btn" class="secondary destructive" style="margin-top: 4px;">Delete Cache &
+                    Rescan</button>
+
                 <p class="help-text">
                     Get your free API key at
                     <a href="https://aistudio.google.com/app/apikey" target="_blank">

@@ -1,8 +1,5 @@
-/**
- * Font management utilities for dynamic font loading and fallbacks
- */
-
 import { DesignSystemInventory } from '../services/auto-discovery';
+import { createExecutionError, ErrorCode } from '../types/errors';
 
 export class FontManager {
     private loadedFonts: Set<string> = new Set();
@@ -70,7 +67,7 @@ export class FontManager {
             }
 
             // Last resort: throw error
-            throw new Error(`Unable to load font ${font.family} or any fallback fonts`);
+            throw createExecutionError(ErrorCode.NODE_CREATION_FAILED, { font }, `Unable to load font ${font.family} or any fallback fonts`);
         }
     }
 
@@ -78,24 +75,32 @@ export class FontManager {
      * Detect fonts used in the design system
      */
     detectFontsFromDesignSystem(inventory: DesignSystemInventory): FontName[] {
-        const fontMap = new Map<string, number>(); // font key -> usage count
+        const fontMap = new Map<string, FontName>();
 
-        // Scan all components for text nodes
-        // Note: This is a simplified version - in reality, we'd need to traverse
-        // component trees to find text nodes, which requires async access to components
+        // Scan all text nodes in the current page for fonts
+        const scanNodes = (nodes: readonly SceneNode[]) => {
+            for (const node of nodes) {
+                if (node.type === 'TEXT') {
+                    const fonts = node.getRangeAllFontNames(0, node.characters.length);
+                    fonts.forEach(font => {
+                        const key = `${font.family}-${font.style}`;
+                        if (!fontMap.has(key)) fontMap.set(key, font);
+                    });
+                }
+                if ('children' in node) scanNodes(node.children);
+            }
+        };
 
-        // For now, we'll return common design system fonts
-        // In a full implementation, you'd scan actual component content
-        const commonFonts: FontName[] = [
+        scanNodes(figma.currentPage.children);
+
+        if (fontMap.size > 0) return Array.from(fontMap.values());
+
+        // Fallback to common fonts if no fonts found
+        return [
             { family: 'Inter', style: 'Regular' },
-            { family: 'Inter', style: 'Medium' },
-            { family: 'Inter', style: 'Bold' },
             { family: 'Roboto', style: 'Regular' },
-            { family: 'SF Pro', style: 'Regular' },
-            { family: 'Helvetica', style: 'Regular' }
+            { family: 'SF Pro', style: 'Regular' }
         ];
-
-        return commonFonts;
     }
 
     /**

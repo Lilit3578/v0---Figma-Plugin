@@ -1,11 +1,11 @@
 import { generateRSNT } from './services/ai-service';
 import { DesignSystemInventory } from './services/auto-discovery';
 import { RateLimiter } from './libs/rate-limiter';
-import { UserFacingError, RenderError } from './types/errors';
+import { UserFacingError, RenderError, formatError } from './types/errors';
 
 const intentInput = document.getElementById('intent-input') as HTMLInputElement;
 const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement;
-const refreshBtn = document.getElementById('refresh-btn') as HTMLButtonElement;
+const refreshBtn = document.getElementById('refresh-inventory') as HTMLButtonElement;
 const statusArea = document.getElementById('status-area') as HTMLDivElement;
 const apiKeyInput = document.getElementById('api-key') as HTMLInputElement;
 const saveKeyBtn = document.getElementById('save-key') as HTMLButtonElement;
@@ -14,6 +14,8 @@ const cooldownTimer = document.getElementById('cooldown-timer') as HTMLDivElemen
 const undoBtn = document.getElementById('undo-btn') as HTMLButtonElement;
 const redoBtn = document.getElementById('redo-btn') as HTMLButtonElement;
 const clearConvBtn = document.getElementById('clear-conv-btn') as HTMLButtonElement;
+const forceRefreshBtn = document.getElementById('force-refresh-btn') as HTMLButtonElement;
+const cacheStats = document.getElementById('cache-stats') as HTMLDivElement;
 
 let currentInventory: DesignSystemInventory | null = null;
 const rateLimiter = new RateLimiter(2000); // 2 second minimum interval
@@ -43,6 +45,15 @@ if (refreshBtn) {
     refreshBtn.onclick = () => {
         showStatus('loading', 'Refreshing inventory...');
         parent.postMessage({ pluginMessage: { type: 'refresh-inventory' } }, '*');
+    };
+}
+
+if (forceRefreshBtn) {
+    forceRefreshBtn.onclick = () => {
+        if (confirm('Are you sure you want to clear the discovery cache? This will force a full rescan which may take a few seconds.')) {
+            showStatus('loading', 'Clearing cache & rescanning...');
+            parent.postMessage({ pluginMessage: { type: 'force-refresh-inventory' } }, '*');
+        }
     };
 }
 
@@ -109,7 +120,8 @@ generateBtn.onclick = async () => {
 
         } catch (error: any) {
             console.error('Generation error:', error);
-            showStatus('error', error.message || 'Generation failed');
+            const userError = formatError(error);
+            showStructuredError(userError);
             generateBtn.disabled = false;
         }
     });
@@ -144,6 +156,28 @@ window.onmessage = (event) => {
             showStatus('success',
                 `✓ Design system ready: ${currentInventory.components.length} components, ${currentInventory.variables.length} variables`
             );
+
+            // Display Cache Stats
+            if (currentInventory.discoveryStats && cacheStats) {
+                const stats = currentInventory.discoveryStats;
+                const hitRate = Math.round((stats.cachedComponents / stats.totalComponents) * 100) || 0;
+
+                // Format age
+                let ageText = 'Fresh scan';
+                if (stats.cacheAge > 1000) {
+                    const minutes = Math.floor(stats.cacheAge / 60000);
+                    if (minutes < 60) ageText = `${minutes}m old`;
+                    else ageText = `${Math.floor(minutes / 60)}h old`;
+                }
+
+                if (stats.cachedComponents > 0) {
+                    cacheStats.textContent = `Using cached data (${ageText}, ${hitRate}% hit rate)`;
+                    cacheStats.style.display = 'block';
+                } else {
+                    cacheStats.textContent = `Full scan completed (${stats.scannedComponents} components analyzed)`;
+                    cacheStats.style.display = 'block';
+                }
+            }
         }
     }
 
@@ -176,6 +210,10 @@ window.onmessage = (event) => {
 
     if (msg.type === 'progress') {
         showProgress(msg.step, msg.progress);
+    }
+
+    if (msg.type === 'generation-progress') {
+        showGenerationProgress(msg.current, msg.total, msg.percentage);
     }
 
     if (msg.type === 'history-update') {
@@ -270,4 +308,27 @@ function showProgress(step: string, progress: number) {
     `;
     statusArea.className = 'loading';
     statusArea.style.display = 'block';
+}
+function showGenerationProgress(current: number, total: number, percentage: number) {
+    statusArea.innerHTML = `
+        <div class="progress-container">
+            <div class="progress-text">Creating ${current} of ${total} elements...</div>
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${percentage}%"></div>
+            </div>
+            <div class="progress-percent">${percentage}%</div>
+            <button id="cancel-gen-btn" class="secondary small" style="margin-top: 8px; width: 100%;">Cancel Generation</button>
+        </div>
+    `;
+    statusArea.className = 'loading';
+    statusArea.style.display = 'block';
+
+    const cancelBtn = document.getElementById('cancel-gen-btn');
+    if (cancelBtn) {
+        cancelBtn.onclick = () => {
+            parent.postMessage({ pluginMessage: { type: 'cancel-generation' } }, '*');
+            cancelBtn.textContent = 'Cancelling...';
+            (cancelBtn as HTMLButtonElement).disabled = true;
+        };
+    }
 }

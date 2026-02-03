@@ -5,31 +5,24 @@ import { promptBuilder } from './prompt-builder';
 import { selectRelevantExamples } from './example-library';
 import { promptManager } from './prompt-manager';
 import { conversationManager } from './conversation-manager';
+import { createAIError, ErrorCode } from '../types/errors';
+import { globalRateLimiter } from '../libs/rate-limiter';
 
-const MODEL_NAME = 'gemini-2.5-flash';
+const MODEL_NAME = 'gemini-2.0-flash';
 
 /**
- * Extract JSON from AI response (handles markdown code blocks)
+ * Extract JSON from AI response
  */
 function extractJSON(text: string): any {
-    // Clean up response: remove potential markdown fences if extractJSON is called on raw text
     let cleaned = text.trim();
-    if (cleaned.startsWith('```')) {
-        const lines = cleaned.split('\n');
-        if (lines[0].startsWith('```')) lines.shift();
-        if (lines[lines.length - 1].startsWith('```')) lines.pop();
-        cleaned = lines.join('\n').trim();
+
+    // Remove markdown code blocks if present
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+        throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { text }, 'No JSON object found in response');
     }
 
-    // Find the first { and last } to isolate the JSON object
-    const firstBrace = cleaned.indexOf('{');
-    const lastBrace = cleaned.lastIndexOf('}');
-
-    if (firstBrace === -1 || lastBrace === -1) {
-        throw new Error('No JSON object found in response');
-    }
-
-    const jsonString = cleaned.substring(firstBrace, lastBrace + 1);
+    const jsonString = jsonMatch[0];
 
     // Try to parse
     try {
@@ -37,18 +30,18 @@ function extractJSON(text: string): any {
 
         // Validate structure
         if (!parsed.rsnt) {
-            throw new Error('Response missing "rsnt" property');
+            throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { parsed }, 'Response missing "rsnt" property');
         }
 
         // Check if rsnt is incorrectly an array
         if (Array.isArray(parsed.rsnt)) {
             console.error('AI returned rsnt as array instead of object:', parsed.rsnt);
-            throw new Error('Invalid response: "rsnt" must be an object, not an array. The AI may have misunderstood the format.');
+            throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { rsnt: parsed.rsnt }, 'Invalid response: "rsnt" must be an object, not an array.');
         }
 
         // Check if rsnt is an object
         if (typeof parsed.rsnt !== 'object' || parsed.rsnt === null) {
-            throw new Error('Invalid response: "rsnt" must be an object');
+            throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { rsnt: parsed.rsnt }, 'Invalid response: "rsnt" must be an object');
         }
 
         return parsed;
@@ -65,15 +58,14 @@ function extractJSON(text: string): any {
         const closeBrackets = (jsonString.match(/]/g) || []).length;
 
         if (openBraces !== closeBraces || openBrackets !== closeBrackets) {
-            throw new Error(
-                `JSON is incomplete/truncated. ` +
-                `Braces: ${openBraces} open vs ${closeBraces} close. ` +
-                `Brackets: ${openBrackets} open vs ${closeBrackets} close. ` +
-                `The AI response was cut off. Try a simpler request.`
+            throw createAIError(
+                ErrorCode.INVALID_JSON_RESPONSE,
+                { openBraces, closeBraces, openBrackets, closeBrackets },
+                `JSON is incomplete/truncated. The AI response was cut off.`
             );
         }
 
-        throw new Error(`JSON parsing failed: ${error.message}. Check console for details.`);
+        throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { originalError: error.message }, `JSON parsing failed: ${error.message}`);
     }
 }
 
@@ -87,7 +79,7 @@ export async function generateRSNT(
 ): Promise<RSNT_Node> {
 
     if (!apiKey || !apiKey.startsWith('AIza')) {
-        throw new Error('INVALID_API_KEY: Please provide a valid Gemini API key');
+        throw createAIError(ErrorCode.API_REQUEST_FAILED, { apiKey }, 'INVALID_API_KEY: Please provide a valid Gemini API key');
     }
 
     console.log('=== AI Generation Start ===');
@@ -131,36 +123,39 @@ export async function generateRSNT(
     console.log(`Prompt tokens estimate: ${Math.ceil(prompt.length / 4)}`);
 
     // 4. Call AI
-    const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
-        {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                contents: [{
-                    parts: [{ text: prompt }]
-                }],
-                generationConfig: {
-                    temperature: 0.2,
-                    maxOutputTokens: 8192
-                }
-            })
-        }
-    );
+    const response = await globalRateLimiter.executeWithRetry(async () => {
+        return fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [{ text: prompt }]
+                    }],
+                    generationConfig: {
+                        temperature: 0.2,
+                        maxOutputTokens: 8192,
+                        responseMimeType: "application/json"
+                    }
+                })
+            }
+        );
+    });
 
     if (!response.ok) {
         const errorText = await response.text();
         console.error('AI API error:', errorText);
 
         if (response.status === 400) {
-            throw new Error('INVALID_REQUEST: The request was malformed. Check your API key and try again.');
+            throw createAIError(ErrorCode.API_REQUEST_FAILED, { status: 400, errorText }, 'INVALID_REQUEST: The request was malformed.');
         } else if (response.status === 429) {
-            throw new Error('RATE_LIMIT: Too many requests. Please wait a moment and try again.');
+            throw createAIError(ErrorCode.API_REQUEST_FAILED, { status: 429, errorText }, 'RATE_LIMIT: Too many requests.');
         } else if (response.status === 403) {
-            throw new Error('INVALID_API_KEY: API key is invalid or doesn\'t have access to Gemini API.');
+            throw createAIError(ErrorCode.API_REQUEST_FAILED, { status: 403, errorText }, 'INVALID_API_KEY: API key is invalid.');
         }
 
-        throw new Error(`AI_ERROR: ${response.status} ${response.statusText}`);
+        throw createAIError(ErrorCode.API_REQUEST_FAILED, { status: response.status, errorText }, `AI_ERROR: ${response.status} ${response.statusText}`);
     }
 
     const data = await response.json();
@@ -171,17 +166,17 @@ export async function generateRSNT(
     });
 
     if (!data.candidates || data.candidates.length === 0) {
-        throw new Error('AI_NO_RESPONSE: The AI did not generate any response. Try rephrasing your request.');
+        throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { data }, 'AI_NO_RESPONSE: The AI did not generate any response.');
     }
 
     const candidate = data.candidates[0];
 
     if (candidate.finishReason === 'SAFETY') {
-        throw new Error('SAFETY_FILTER: The AI blocked this request due to safety filters. Try a different description.');
+        throw createAIError(ErrorCode.API_REQUEST_FAILED, { finishReason: 'SAFETY' }, 'SAFETY_FILTER: The AI blocked this request due to safety filters.');
     }
 
     if (!candidate.content?.parts?.[0]?.text) {
-        throw new Error('AI_EMPTY_RESPONSE: The AI response was empty. Try again or rephrase your request.');
+        throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { candidate }, 'AI_EMPTY_RESPONSE: The AI response was empty.');
     }
 
     const aiText = candidate.content.parts[0].text;
@@ -190,6 +185,30 @@ export async function generateRSNT(
     // Parse the JSON response
     const parsed = extractJSON(aiText);
     console.log('Parsed RSNT successfully');
+
+    // Log design reasoning if available (new format)
+    if (parsed.reasoning) {
+        console.log('=== DESIGN REASONING ===');
+        console.log('Goal:', parsed.reasoning.layoutChoice);
+        console.log('Spacing:', parsed.reasoning.spacingChoice);
+        console.log('Hierarchy:', parsed.reasoning.hierarchyChoice);
+        console.log('Accessibility:', parsed.reasoning.accessibilityNotes);
+    }
+
+    if (parsed.designDecisions && parsed.designDecisions.length > 0) {
+        console.log('=== KEY DECISIONS ===');
+        parsed.designDecisions.forEach((d: any) => {
+            console.log(`- [${d.element}]: ${d.decision} (${d.rationale})`);
+        });
+    }
+
+    if (parsed.selfAssessedConfidence) {
+        console.log(`AI Confidence: ${parsed.selfAssessedConfidence}`);
+    }
+
+    if (parsed.uncertainties && parsed.uncertainties.length > 0) {
+        console.log('Uncertainties:', parsed.uncertainties);
+    }
 
     return parsed.rsnt;
 }

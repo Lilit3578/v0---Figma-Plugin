@@ -1,0 +1,24 @@
+
+function showGenerationProgress(current: number, total: number, percentage: number) {
+    statusArea.innerHTML = `
+        <div class="progress-container">
+            <div class="progress-text">Creating ${current} of ${total} elements...</div>
+            <div class="progress-bar">
+                <div class="progress-fill" style="width: ${percentage}%"></div>
+            </div>
+            <div class="progress-percent">${percentage}%</div>
+            <button id="cancel-gen-btn" class="secondary small" style="margin-top: 8px; width: 100%;">Cancel Generation</button>
+        </div>
+    `;
+    statusArea.className = 'loading';
+    statusArea.style.display = 'block';
+
+    const cancelBtn = document.getElementById('cancel-gen-btn');
+    if (cancelBtn) {
+        cancelBtn.onclick = () => {
+            parent.postMessage({ pluginMessage: { type: 'cancel-generation' } }, '*');
+            cancelBtn.textContent = 'Cancelling...';
+            (cancelBtn as HTMLButtonElement).disabled = true;
+        };
+    }
+}

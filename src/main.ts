@@ -1,7 +1,7 @@
 import { getOrDiscoverInventory, refreshInventory, incrementalDiscovery, DesignSystemInventory } from './services/auto-discovery';
 import { validateRSNT } from './types/rsnt';
 import { renderRSNT } from './services/rendering';
-import { formatError } from './types/errors';
+import { formatError, createAIError, ErrorCode } from './types/errors';
 import { generateRSNT } from './services/ai-service';
 import { historyManager } from './services/history-manager';
 import { conversationManager } from './services/conversation-manager';
@@ -53,23 +53,34 @@ let currentInventory: DesignSystemInventory | null = null;
 
   } catch (error: any) {
     console.error('Discovery error:', error);
+    const userError = formatError(error);
     figma.ui.postMessage({
       type: 'error',
-      message: `Discovery failed: ${error.message}`
+      error: userError
     });
   }
 })();
 
 // Handle messages from UI
+let cancellationRequested = false;
+
 figma.ui.onmessage = async (msg) => {
+
+  if (msg.type === 'cancel-generation') {
+    cancellationRequested = true;
+    return;
+  }
 
   // Generate design
   if (msg.type === 'generate') {
     const { intent, rsnt } = msg;
 
     try {
+      cancellationRequested = false;
+      const startTime = Date.now();
+
       if (!rsnt) {
-        throw new Error('No RSNT data received from UI');
+        throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { intent }, 'No RSNT data received from UI');
       }
 
       console.log('Rendering RSNT:', rsnt);
@@ -83,9 +94,21 @@ figma.ui.onmessage = async (msg) => {
       // Validate
       const validation = validateRSNT(rsnt, validationContext);
       if (!validation.valid) {
+        // Collect all errors into a user-friendly format
+        const errorDetails = validation.errors.map(e => `[${e.code}] ${e.message} (${e.location})`).join('\n');
+
         figma.ui.postMessage({
           type: 'error',
-          message: `Validation failed: ${validation.errors.join(', ')}`
+          error: {
+            code: validation.errors[0]?.code || 0,
+            title: 'RSNT Validation Failed',
+            message: 'The design structure contains errors.',
+            guidance: validation.errors[0]?.guidance || 'Validation failed.',
+            suggestions: validation.errors[0]?.code ? [validation.errors[0].code === 1004 ? 'Try a simpler request' : 'Check technical details'] : ['Retry generation'],
+            technicalDetails: errorDetails,
+            category: 'RSNT_VALIDATION',
+            recoverable: true
+          }
         });
         return;
       }
@@ -107,7 +130,25 @@ figma.ui.onmessage = async (msg) => {
       // Render
       figma.ui.postMessage({ type: 'status', status: 'loading', message: 'Creating design...' });
 
-      const renderResult = await renderRSNT(rsnt);
+      // Call renderRSNT with progress and cancellation callbacks
+      const renderResult = await renderRSNT(
+        rsnt,
+        undefined,
+        (progress) => {
+          const percentage = Math.round((progress.current / progress.total) * 100);
+          figma.ui.postMessage({
+            type: 'generation-progress',
+            current: progress.current,
+            total: progress.total,
+            percentage
+          });
+        },
+        () => cancellationRequested
+      );
+
+      const duration = Date.now() - startTime;
+      console.log(`Generation completed in ${duration}ms`);
+
       const rootNode = renderResult.node;
 
       // Track component usage from RSNT
@@ -143,8 +184,8 @@ figma.ui.onmessage = async (msg) => {
       figma.viewport.scrollAndZoomIntoView([rootNode]);
 
       const successMessage = renderResult.errors.length > 0 || renderResult.warnings.length > 0
-        ? `✓ Design generated with ${renderResult.warnings.length} warnings and ${renderResult.errors.length} errors`
-        : '✓ Design generated successfully!';
+        ? `✓ Design generated with ${renderResult.warnings.length} warnings and ${renderResult.errors.length} errors (${duration}ms)`
+        : `✓ Design generated successfully (${duration}ms)`;
 
       figma.ui.postMessage({
         type: 'complete',
@@ -158,12 +199,29 @@ figma.ui.onmessage = async (msg) => {
       });
 
     } catch (error: any) {
+      if (error.message === 'Operation cancelled') {
+        console.log('Generation cancelled by user');
+        figma.ui.postMessage({
+          type: 'error',
+          error: {
+            title: 'Generation Cancelled',
+            message: 'The design generation was cancelled by your request.',
+            code: ErrorCode.GENERATION_CANCELLED,
+            guidance: '',
+            suggestions: [],
+            category: 'EXECUTION',
+            recoverable: true
+          }
+        });
+        return;
+      }
+
       console.error('Generation failed:', error);
 
       // Use formatError to provide user-friendly error messages
       const userError = formatError(error, {
-        componentId: error.message?.match(/Component ([^ ]+) not found/)?.[1],
-        variableId: error.message?.match(/Variable ([^ ]+) not found/)?.[1]
+        componentId: error.details?.componentId,
+        variableId: error.details?.variableId
       });
 
       figma.ui.postMessage({
@@ -174,12 +232,20 @@ figma.ui.onmessage = async (msg) => {
   }
 
   // Refresh inventory
-  if (msg.type === 'refresh-inventory') {
+  if (msg.type === 'refresh-inventory' || msg.type === 'force-refresh-inventory') {
     try {
       figma.ui.postMessage({ type: 'status', status: 'loading', message: 'Refreshing...' });
 
-      // Use incremental discovery if we have a previous inventory
-      if (currentInventory) {
+      // Force refresh if requested
+      if (msg.type === 'force-refresh-inventory') {
+        currentInventory = null; // Reset current
+        await refreshInventory((step, progress) => { // This explicitly clears cache
+          figma.ui.postMessage({ type: 'progress', step, progress });
+        });
+      }
+
+      // Use incremental discovery if we have a previous inventory (and not forcing)
+      else if (currentInventory) {
         const result = await incrementalDiscovery(
           currentInventory,
           (step, progress) => {
@@ -227,9 +293,10 @@ figma.ui.onmessage = async (msg) => {
       });
 
     } catch (error: any) {
+      const userError = formatError(error);
       figma.ui.postMessage({
         type: 'error',
-        message: `Refresh failed: ${error.message}`
+        error: userError
       });
     }
   }

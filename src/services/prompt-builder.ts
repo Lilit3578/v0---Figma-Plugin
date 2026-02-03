@@ -13,22 +13,65 @@ export interface PromptTemplate {
     examples: PromptExample[];      // Few-shot examples
 }
 
+// New response schema types
+export interface DesignDecision {
+    element: string;
+    decision: string;
+    rationale: string;
+}
+
+export interface AlternativeConsidered {
+    considered: string;
+    rejected: string;
+}
+
+export interface DesignReasoning {
+    layoutChoice: string;
+    spacingChoice: string;
+    hierarchyChoice: string;
+    accessibilityNotes: string;
+}
+
+export interface ReviewSelfAssessment {
+    selfAssessedConfidence: number;
+    uncertainties: string[];
+}
+
+export interface AIResponse {
+    rsnt: RSNT_Node;
+    reasoning: DesignReasoning;
+    designDecisions: DesignDecision[];
+    alternatives: AlternativeConsidered[];
+    selfAssessedConfidence: number;
+    uncertainties: string[];
+}
+
 export interface PromptExample {
     intent: string;
     rsnt: RSNT_Node;
     explanation: string;
     tags: string[];  // For filtering relevant examples
+    reasoning?: {
+        layoutChoice: string;
+        spacingChoice: string;
+        hierarchyChoice: string;
+        accessibilityNotes: string;
+    };
+    designDecisions?: Array<{ element: string; decision: string; rationale: string }>;
+    alternatives?: Array<{ considered: string; rejected: string }>;
 }
 
 export class PromptBuilder {
-    private systemPrompt = `You are an expert Figma designer who creates pixel-perfect designs using RSNT (React-Style Node Tree) format.
+    private systemPrompt = `You are an expert product designer with deep knowledge of UI/UX best practices, accessibility standards, design systems, and cognitive psychology. You apply this expertise when interpreting user intent.
 
-Your role:
-1. Analyze user requests carefully
-2. Select appropriate components from the design system
-3. Create well-structured, accessible layouts
-4. Follow design system guidelines strictly
-5. Output valid RSNT JSON only`;
+Your role is to be an intelligent design assistant, not just a translator. Make informed design decisions based on your training.
+
+Your goals:
+1. Analyze user requests not just for content, but for user goals and context
+2. Apply standard UI patterns and best practices
+3. Create accessible, usable, and beautiful layouts
+4. Select appropriate components from the design system
+5. Output valid RSNT JSON that represents your design`;
 
     private coreConstraints = [
         'Use ONLY component IDs listed in the inventory',
@@ -39,8 +82,9 @@ Your role:
         'When adding fills, color values MUST be valid: { "r": 0.5, "g": 0.5, "b": 0.5 } (0-1 range, NOT 0-255)',
         'NEVER use undefined or null for color values - omit fills entirely if no color needed',
         'Prefer using design system color variables over hardcoded colors',
+        'These roles are approved and preferred. Use them when appropriate. If user intent clearly requires something different, you may adapt, but explain why in reasoning.',
         'Variable format: { "variableId": "VariableID:xxx:xxx" }',
-        'Output COMPLETE valid JSON only, no markdown'
+        'Output COMPLETE valid JSON only matching the requested schema.'
     ];
 
     /**
@@ -120,6 +164,9 @@ ${limitedVariables.map(v => `- "${v.id}": ${v.name} (${v.resolvedType})`).join('
     /**
      * Build guidelines section
      */
+    /**
+     * Build guidelines section
+     */
     private buildGuidelines(guidelines?: any): string {
         if (!guidelines) return '';
 
@@ -140,12 +187,104 @@ When creating layouts:
     }
 
     /**
+     * Build Design Principles section
+     */
+    private buildDesignPrinciples(): string {
+        return `
+DESIGN PRINCIPLES TO APPLY:
+1. Visual Hierarchy: Use size, weight, color, and spacing to create clear information hierarchy. Most important elements should be largest/boldest.
+2. Spacing & Rhythm: Use consistent spacing scale (multiples of 4px/8px). Group related elements with proximity. Use whitespace to reduce cognitive load.
+3. Accessibility: Minimum 44x44px touch targets on mobile. Ensure sufficient color contrast. Always include labels for inputs.
+4. Affordances: Buttons should look clickable (padding, borders, shadows). Links should be underlined or clearly colored. Disabled states should be visually distinct.
+5. Progressive Disclosure: Don't overwhelm users. Show essential information first, details on demand.
+6. Consistency: Similar actions should look similar. Use patterns consistently (e.g., all form layouts should follow same structure).
+
+TAILWIND BEST PRACTICES:
+- Mobile-first: Start with base classes for mobile, add md:/lg: for larger screens.
+- Consistent spacing: Use standard scale (p-4, gap-6, etc.), avoid arbitrary values unless necessary.
+- Semantic colors: Prefer semantic tokens (bg-primary) over specific shades (bg-blue-500) when design system context is available.
+`;
+    }
+
+    /**
+     * Build Design Patterns section
+     */
+    private buildDesignPatterns(): string {
+        return `
+COMMON UI PATTERNS YOU KNOW:
+- Login Card: Typically has heading/logo, 2 fields (email/password), primary button, optional 'forgot password' link, optional 'remember me' checkbox. Padding: comfortable (p-6 to p-8). Max-width: 350-450px.
+- Form Layout: Fields stack vertically. Labels above inputs. Related fields grouped. Submit button at bottom. Error messages below fields. Gap between fields: gap-4.
+- Dashboard: Grid or multi-column layout. Cards for metrics. Clear visual hierarchy. Consistent spacing.
+- Navigation: Vertical sidebar or horizontal header. Clear active state. Grouped by section.
+- Data Table: Headers clearly distinguished. Alternating row colors optional. Pagination at bottom. Actions aligned right.
+`;
+    }
+
+    private buildReasoningRequirements(): string {
+        return `
+REASONING REQUIREMENTS:
+For each major decision (layout, spacing, component choice), you must explain your reasoning.
+- Layout: Why did you choose this layout primitive?
+- Spacing: Why did you choose these padding/gap values?
+- Hierarchy: How did you establish visual hierarchy?
+- Accessibility: What accessibility considerations did you address?
+
+Refer to the DESIGN PRINCIPLES in your reasoning.
+`;
+    }
+
+    private buildOutputSchema(): string {
+        return `
+OUTPUT FORMAT:
+You MUST return a single valid JSON object with the following structure:
+{
+  "rsnt": RSNT_Node, // The complete RSNT node tree
+  "reasoning": {
+    "layoutChoice": "string", // Why this layout primitive was chosen
+    "spacingChoice": "string", // Why this padding/gap values
+    "hierarchyChoice": "string", // How visual hierarchy was established
+    "accessibilityNotes": "string" // Accessibility considerations addressed
+  },
+  "designDecisions": [
+    {
+      "element": "string", // e.g., "PrimaryButton"
+      "decision": "string", // e.g., "Full width on mobile"
+      "rationale": "string" // e.g., "Larger touch target improves mobile usability"
+    }
+  ],
+  "alternatives": [
+    {
+      "considered": "string", // e.g., "Horizontal form layout"
+      "rejected": "string" // e.g., "Would be too cramped on mobile screens"
+    }
+  ],
+  "selfAssessedConfidence": number, // 0-1, 1 is highest confidence
+  "uncertainties": [ "string" ] // Array of things you are unsure about
+}
+`;
+    }
+
+    /**
      * Format example for prompt
      */
     private formatExample(example: PromptExample): string {
+        const fullExample: AIResponse = {
+            rsnt: example.rsnt,
+            reasoning: example.reasoning || {
+                layoutChoice: "Standard vertical rhythm for readability",
+                spacingChoice: "Multiples of 8px for consistency",
+                hierarchyChoice: "Bold headings with lighter body text",
+                accessibilityNotes: "High contrast colors used"
+            },
+            designDecisions: example.designDecisions || [],
+            alternatives: example.alternatives || [],
+            selfAssessedConfidence: 1,
+            uncertainties: []
+        };
+
         return `
 Example: "${example.intent}"
-${JSON.stringify({ rsnt: example.rsnt, explanation: example.explanation }, null, 2)}
+${JSON.stringify(fullExample, null, 2)}
 `;
     }
 
@@ -166,11 +305,19 @@ ${JSON.stringify({ rsnt: example.rsnt, explanation: example.explanation }, null,
         const sections = [
             this.systemPrompt,
             '',
-            conversationContext || '',  // NEW: Add conversation context
+            conversationContext || '',
             '',
             this.buildContext(inventory, selectedComponents),
             '',
             this.buildGuidelines(inventory.guidelines),
+            '',
+
+            '',
+            this.buildDesignPrinciples(),
+            '',
+            this.buildDesignPatterns(),
+            '',
+            this.buildReasoningRequirements(),
             '',
             `USER REQUEST: "${intent}"`,
             '',
@@ -179,6 +326,8 @@ ${JSON.stringify({ rsnt: example.rsnt, explanation: example.explanation }, null,
             '',
             'EXAMPLES:',
             ...examples.map(ex => this.formatExample(ex)),
+            '',
+            this.buildOutputSchema(),
             '',
             'Now create the design for the user request above. Output COMPLETE valid JSON only.'
         ];
