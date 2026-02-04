@@ -42,3 +42,23 @@ export interface PropertyAnalysisRequest {
     propertyName: string;
     values: string[];
 }
+
+/**
+ * Complete property mapping result with overall metrics
+ */
+export interface PropertyMappingResult {
+    mappings: PropertyAnalysis[];
+    overallConfidence: number;
+    mappablePercentage: number;
+    unmappedProps: string[];
+    timestamp: number;
+}
+
+/**
+ * Result of applying property mappings to RSNT props
+ */
+export interface AppliedMapping {
+    componentProperties: Record<string, string>;
+    skippedProps: string[];
+    warnings: string[];
+}

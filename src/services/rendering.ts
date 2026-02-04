@@ -1,8 +1,9 @@
 import { RSNT_Node } from '../types/rsnt';
-import { normalizeColor } from '../libs/utils';
+import { normalizeColor } from '../libs/color-utils';
 import { RenderResult, RenderError, createRenderErrorUI, createExecutionError, createResolutionError, ErrorCode } from '../types/errors';
 import { fontManager } from './font-manager';
 import { processInChunks } from '../utils/chunking';
+import { ResolutionResult, ExecutionInstructions, ComponentInstructions, FrameInstructions } from './resolution';
 
 /**
  * Render RSNT node to Figma
@@ -28,6 +29,7 @@ export async function renderRSNT(
             let figmaNode: SceneNode;
 
             // Create node based on type
+            // Note: If resolution is provided, use executeInstructions instead
             switch (rsnt.type) {
                 case 'COMPONENT_INSTANCE':
                     figmaNode = await renderComponentInstance(rsnt);
@@ -116,7 +118,7 @@ function flattenRSNT(root: RSNT_Node): FlatNode[] {
     return result;
 }
 
-async function renderComponentInstance(node: RSNT_Node): Promise<InstanceNode> {
+async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentInstructions['overrides']): Promise<InstanceNode> {
     if (!node.componentId) {
         throw createExecutionError(ErrorCode.MISSING_REQUIRED_PROPERTY, { node: node.id }, 'Component instance missing componentId');
     }
@@ -137,6 +139,30 @@ async function renderComponentInstance(node: RSNT_Node): Promise<InstanceNode> {
             console.warn('Failed to set some properties:', error);
         }
     }
+
+    // Apply overrides if provided (from Tier 2 structural match)
+    if (overrides) {
+        if (overrides.fills && 'fills' in instance) {
+            instance.fills = overrides.fills;
+        }
+        if (overrides.strokes && 'strokes' in instance) {
+            instance.strokes = overrides.strokes;
+        }
+        if (overrides.text && instance.type === 'INSTANCE') {
+            // Find text nodes within instance and update
+            const textNodes = instance.findAll(n => n.type === 'TEXT') as TextNode[];
+            for (const textNode of textNodes) {
+                textNode.characters = overrides.text;
+            }
+        }
+        if (overrides.padding && 'paddingTop' in instance) {
+            instance.paddingTop = overrides.padding.top;
+            instance.paddingRight = overrides.padding.right;
+            instance.paddingBottom = overrides.padding.bottom;
+            instance.paddingLeft = overrides.padding.left;
+        }
+    }
+
     return instance;
 }
 
@@ -270,4 +296,227 @@ function resolveVariable(variableId: string, expectedType: VariableResolvedDataT
         console.warn('Variable resolution failed', e);
     }
     return null;
+}
+
+/**
+ * ============================================================================
+ * RESOLUTION INSTRUCTION EXECUTION
+ * ============================================================================
+ */
+
+/**
+ * Execute resolution instructions to create a Figma node
+ * This is the bridge between resolution and rendering
+ */
+export async function executeInstructions(
+    instructions: ExecutionInstructions,
+    rsnt: RSNT_Node
+): Promise<SceneNode> {
+    if (instructions.type === 'INSTANTIATE_COMPONENT') {
+        return executeComponentInstructions(instructions, rsnt);
+    } else {
+        return executeFrameInstructions(instructions, rsnt);
+    }
+}
+
+/**
+ * Execute component instantiation instructions
+ */
+async function executeComponentInstructions(
+    instructions: ComponentInstructions,
+    rsnt: RSNT_Node
+): Promise<InstanceNode> {
+    // Create a temporary RSNT node with the component ID and properties
+    const tempNode: RSNT_Node = {
+        ...rsnt,
+        componentId: instructions.componentId,
+        properties: instructions.properties,
+    };
+
+    // Use existing renderComponentInstance with overrides
+    return renderComponentInstance(tempNode, instructions.overrides);
+}
+
+/**
+ * Execute frame creation instructions
+ */
+async function executeFrameInstructions(
+    instructions: FrameInstructions,
+    rsnt: RSNT_Node
+): Promise<FrameNode> {
+    const frame = figma.createFrame();
+
+    // Set name
+    if (rsnt.name) {
+        frame.name = rsnt.name;
+    }
+
+    // Set layout mode
+    frame.layoutMode = instructions.layoutMode;
+
+    // Set dimensions if specified
+    if (rsnt.width !== undefined) {
+        frame.resize(rsnt.width, rsnt.height || 100);
+    }
+    if (rsnt.height !== undefined && rsnt.width === undefined) {
+        frame.resize(frame.width, rsnt.height);
+    }
+
+    // Apply styling
+    const { styling } = instructions;
+
+    // Apply fills
+    if (styling.fills) {
+        frame.fills = styling.fills;
+    }
+
+    // Apply strokes
+    if (styling.strokes) {
+        frame.strokes = styling.strokes;
+    }
+
+    // Apply corner radius
+    if (styling.cornerRadius !== undefined) {
+        frame.cornerRadius = styling.cornerRadius;
+    }
+
+    // Apply padding
+    if (styling.padding) {
+        frame.paddingTop = styling.padding.top;
+        frame.paddingRight = styling.padding.right;
+        frame.paddingBottom = styling.padding.bottom;
+        frame.paddingLeft = styling.padding.left;
+    }
+
+    // Apply variable bindings if present (Tier 3)
+    if (instructions.variableBindings) {
+        applyVariableBindings(frame, instructions.variableBindings);
+    }
+
+    return frame;
+}
+
+/**
+ * Apply variable bindings to a frame
+ */
+function applyVariableBindings(
+    frame: FrameNode,
+    bindings: Record<string, string>
+): void {
+    for (const [property, variableId] of Object.entries(bindings)) {
+        try {
+            const variable = figma.variables.getVariableById(variableId);
+            if (variable) {
+                // Determine which property to bind
+                // Note: Figma API has specific field names for variable bindings
+                if (property.includes('fill') || property.includes('color')) {
+                    // For fills, we need to use the actual fill binding
+                    // This is a simplified version - real implementation would be more sophisticated
+                    console.log(`Variable binding for fills not fully supported yet: ${variableId}`);
+                } else if (property.includes('padding')) {
+                    // Bind specific padding side
+                    const side = property.replace('padding', '').toLowerCase();
+                    const fieldName = `padding${side.charAt(0).toUpperCase() + side.slice(1)}` as any;
+                    try {
+                        frame.setBoundVariable(fieldName, variable);
+                    } catch (e) {
+                        console.warn(`Could not bind padding ${side}:`, e);
+                    }
+                } else if (property.includes('radius')) {
+                    // Bind corner radius
+                    try {
+                        frame.setBoundVariable('topLeftRadius' as any, variable);
+                    } catch (e) {
+                        console.warn('Could not bind corner radius:', e);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn(`Failed to bind variable ${variableId} to ${property}:`, e);
+        }
+    }
+}
+
+/**
+ * Render RSNT with resolution results
+ * This is an alternative entry point that uses pre-resolved instructions
+ */
+export async function renderWithResolution(
+    resolutions: ResolutionResult[],
+    parent?: BaseNode & ChildrenMixin,
+    onProgress?: (progress: { current: number, total: number }) => void,
+    shouldCancel?: () => boolean
+): Promise<RenderResult> {
+    const errors: RenderError[] = [];
+    const warnings: RenderError[] = [];
+    const createdNodes: SceneNode[] = [];
+
+    // Process resolutions in chunks
+    const processResolution = async (resolution: ResolutionResult, index: number) => {
+        try {
+            // Extract RSNT from resolution metadata
+            // Note: This assumes the resolution includes the original RSNT
+            // In practice, you'd need to pass both resolution and RSNT
+            const rsnt = resolution.metadata as any; // Placeholder
+
+            const figmaNode = await executeInstructions(resolution.instructions, rsnt);
+
+            // Attach tier/confidence metadata
+            figmaNode.setPluginData('resolutionTier', resolution.tier.toString());
+            figmaNode.setPluginData('resolutionConfidence', resolution.confidence.toString());
+            figmaNode.setPluginData('resolutionMethod', resolution.method);
+
+            // Collect warnings
+            for (const warning of resolution.warnings) {
+                warnings.push(createRenderErrorUI(
+                    createExecutionError(ErrorCode.PROPERTY_BINDING_FAILED),
+                    rsnt.id || 'unknown',
+                    'warning',
+                    warning
+                ));
+            }
+
+            createdNodes.push(figmaNode);
+
+            // Attach to parent
+            if (parent && 'appendChild' in parent) {
+                parent.appendChild(figmaNode);
+            }
+        } catch (error: any) {
+            console.error(`Error executing resolution ${index}:`, error);
+            errors.push(createRenderErrorUI(
+                error instanceof Error ? error : createExecutionError(ErrorCode.NODE_CREATION_FAILED, { error }),
+                `resolution-${index}`,
+                'error',
+                'Failed to execute resolution instructions'
+            ));
+        }
+    };
+
+    try {
+        await processInChunks(
+            resolutions,
+            25, // Chunk size
+            processResolution,
+            onProgress,
+            shouldCancel
+        );
+    } catch (e: any) {
+        if (e.message === 'Operation cancelled') {
+            // Clean up created nodes
+            for (const node of createdNodes) {
+                if (!node.removed) {
+                    node.remove();
+                }
+            }
+            throw e;
+        }
+        throw e;
+    }
+
+    return {
+        node: createdNodes[0] || null as any,
+        errors,
+        warnings
+    };
 }

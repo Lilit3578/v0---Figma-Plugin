@@ -1,6 +1,7 @@
 import { ComponentInfo } from './auto-discovery';
 import { classificationService } from './classification';
-import { PropertyAnalysis, PropertyType, ValueMapping } from '../types/classification';
+import { PropertyAnalysis, PropertyType, ValueMapping, AppliedMapping } from '../types/classification';
+import { findBestMatch, stringSimilarity } from '../utils/string-similarity';
 
 const MAPPING_CACHE_KEY = 'property_mappings_v1';
 
@@ -165,6 +166,217 @@ export class PropertyMappingService {
      */
     getMappings(componentId: string) {
         return this.mappingCache.get(componentId);
+    }
+
+    /**
+     * Calculate overall confidence from property analyses
+     * Returns average confidence across all value mappings
+     */
+    calculateOverallConfidence(mappings: Record<string, PropertyAnalysis> | undefined): number {
+        if (!mappings || Object.keys(mappings).length === 0) {
+            return 0;
+        }
+
+        let totalConfidence = 0;
+        let count = 0;
+
+        for (const analysis of Object.values(mappings)) {
+            if (analysis.valueMappings && Array.isArray(analysis.valueMappings)) {
+                for (const mapping of analysis.valueMappings) {
+                    if (typeof mapping.confidence === 'number') {
+                        totalConfidence += mapping.confidence;
+                        count++;
+                    }
+                }
+            }
+        }
+
+        return count > 0 ? totalConfidence / count : 0;
+    }
+
+    /**
+     * Calculate what percentage of RSNT props can be mapped
+     * Returns value between 0 and 1
+     */
+    calculateMappablePercentage(
+        rsntProps: Record<string, any>,
+        mappings: Record<string, PropertyAnalysis> | undefined
+    ): number {
+        if (!mappings || Object.keys(rsntProps).length === 0) {
+            return 0;
+        }
+
+        const semanticLookup = this.buildSemanticLookup(mappings);
+        let mappableCount = 0;
+
+        for (const rsntProp of Object.keys(rsntProps)) {
+            // Check if this RSNT prop can be mapped
+            if (semanticLookup[rsntProp]) {
+                mappableCount++;
+            } else {
+                // Try fuzzy matching
+                const fuzzyMatch = this.fuzzyMatchProperty(rsntProp, mappings);
+                if (fuzzyMatch) {
+                    mappableCount++;
+                }
+            }
+        }
+
+        return mappableCount / Object.keys(rsntProps).length;
+    }
+
+    /**
+     * Try to find a fuzzy match for a property name
+     * Uses Levenshtein distance to find similar property names
+     */
+    fuzzyMatchProperty(
+        rsntProp: string,
+        mappings: Record<string, PropertyAnalysis> | undefined
+    ): { match: string; score: number } | null {
+        if (!mappings) return null;
+
+        // Build list of semantic keys
+        const semanticKeys: string[] = [];
+        for (const analysis of Object.values(mappings)) {
+            let semanticKey = '';
+            switch (analysis.propertyType) {
+                case PropertyType.SEMANTIC_VARIANT: semanticKey = 'variant'; break;
+                case PropertyType.SEMANTIC_SIZE: semanticKey = 'size'; break;
+                case PropertyType.SEMANTIC_STATE: semanticKey = 'state'; break;
+                case PropertyType.SEMANTIC_STYLE: semanticKey = 'style'; break;
+            }
+            if (semanticKey && !semanticKeys.includes(semanticKey)) {
+                semanticKeys.push(semanticKey);
+            }
+        }
+
+        // Find best match with threshold of 0.6
+        return findBestMatch(rsntProp, semanticKeys, 0.6);
+    }
+
+    /**
+     * Enhanced version of applyPropertyMapping that returns detailed results
+     * Includes warnings, skipped properties, and fuzzy matching fallback
+     */
+    applyMappingWithWarnings(
+        componentId: string,
+        rsntProps: Record<string, any>
+    ): AppliedMapping {
+        const mappings = this.mappingCache.get(componentId);
+        const result: AppliedMapping = {
+            componentProperties: {},
+            skippedProps: [],
+            warnings: []
+        };
+
+        if (!mappings) {
+            result.warnings.push('No property mappings found for this component');
+            result.skippedProps = Object.keys(rsntProps);
+            return result;
+        }
+
+        // Calculate overall metrics
+        const overallConfidence = this.calculateOverallConfidence(mappings);
+        const mappablePercentage = this.calculateMappablePercentage(rsntProps, mappings);
+
+        // Warn if below thresholds
+        if (overallConfidence < 0.70) {
+            result.warnings.push(`Low overall confidence: ${(overallConfidence * 100).toFixed(0)}% (threshold: 70%)`);
+        }
+        if (mappablePercentage < 0.70) {
+            result.warnings.push(`Low mappability: ${(mappablePercentage * 100).toFixed(0)}% (threshold: 70%)`);
+        }
+
+        // Build semantic lookup
+        const semanticLookup = this.buildSemanticLookup(mappings);
+
+        // Apply mappings
+        for (const [rsntProp, rsntValue] of Object.entries(rsntProps)) {
+            const mapData = semanticLookup[rsntProp];
+
+            if (mapData) {
+                // Direct mapping found
+                const componentValue = mapData.valueMap[rsntValue];
+                if (componentValue) {
+                    result.componentProperties[mapData.compProp] = componentValue;
+                    this.logMappingTransparency(rsntProp, mapData.compProp, rsntValue, componentValue);
+                } else {
+                    result.warnings.push(`Value "${rsntValue}" for property "${rsntProp}" has no mapping`);
+                    result.skippedProps.push(rsntProp);
+                }
+            } else {
+                // Try fuzzy matching
+                const fuzzyMatch = this.fuzzyMatchProperty(rsntProp, mappings);
+                if (fuzzyMatch && fuzzyMatch.score >= 0.6) {
+                    const fuzzyMapData = semanticLookup[fuzzyMatch.match];
+                    if (fuzzyMapData) {
+                        const componentValue = fuzzyMapData.valueMap[rsntValue];
+                        if (componentValue) {
+                            result.componentProperties[fuzzyMapData.compProp] = componentValue;
+                            result.warnings.push(`Fuzzy matched "${rsntProp}" → "${fuzzyMatch.match}" (${(fuzzyMatch.score * 100).toFixed(0)}% similar)`);
+                            this.logMappingTransparency(rsntProp, fuzzyMapData.compProp, rsntValue, componentValue, fuzzyMatch.score);
+                        } else {
+                            result.skippedProps.push(rsntProp);
+                        }
+                    }
+                } else {
+                    result.warnings.push(`Could not map property "${rsntProp}"`);
+                    result.skippedProps.push(rsntProp);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Build semantic lookup table from property analyses
+     * Internal helper method
+     */
+    private buildSemanticLookup(
+        mappings: Record<string, PropertyAnalysis>
+    ): Record<string, { compProp: string; valueMap: Record<string, string> }> {
+        const semanticLookup: Record<string, { compProp: string; valueMap: Record<string, string> }> = {};
+
+        for (const [compProp, analysis] of Object.entries(mappings)) {
+            let semanticKey = '';
+
+            switch (analysis.propertyType) {
+                case PropertyType.SEMANTIC_VARIANT: semanticKey = 'variant'; break;
+                case PropertyType.SEMANTIC_SIZE: semanticKey = 'size'; break;
+                case PropertyType.SEMANTIC_STATE: semanticKey = 'state'; break;
+                case PropertyType.SEMANTIC_STYLE: semanticKey = 'style'; break;
+            }
+
+            if (semanticKey) {
+                const valueMap: Record<string, string> = {};
+                analysis.valueMappings.forEach(m => {
+                    valueMap[m.semanticValue] = m.clientValue;
+                });
+
+                semanticLookup[semanticKey] = {
+                    compProp,
+                    valueMap
+                };
+            }
+        }
+
+        return semanticLookup;
+    }
+
+    /**
+     * Log property mapping for transparency
+     * Shows designer how properties were mapped
+     */
+    private logMappingTransparency(
+        rsntProp: string,
+        componentProp: string,
+        rsntValue: string,
+        componentValue: string,
+        fuzzyScore?: number
+    ): void {
+        const fuzzyNote = fuzzyScore ? ` (fuzzy: ${(fuzzyScore * 100).toFixed(0)}%)` : '';
+        console.log(`  ✓ Mapped ${rsntProp}:${rsntValue} → ${componentProp}:${componentValue}${fuzzyNote}`);
     }
 }
 

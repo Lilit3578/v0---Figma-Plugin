@@ -116,3 +116,30 @@ export function hexToRGB(hex: string): RGB {
         b: (num & 255) / 255
     };
 }
+
+/**
+ * Handle different color input formats (hex or object) and return Figma RGB
+ * Normalizes colors from various sources to the standard 0-1 range
+ */
+export function normalizeColor(color: any): { r: number; g: number; b: number } {
+    if (typeof color === 'string') {
+        return hexToRGB(color);
+    }
+
+    if (typeof color === 'object' && color !== null) {
+        // Check if r, g, b exist and are numbers
+        const r = typeof color.r === 'number' ? (color.r > 1 ? color.r / 255 : color.r) : 0;
+        const g = typeof color.g === 'number' ? (color.g > 1 ? color.g / 255 : color.g) : 0;
+        const b = typeof color.b === 'number' ? (color.b > 1 ? color.b / 255 : color.b) : 0;
+
+        // Ensure values are valid numbers in 0-1 range
+        return {
+            r: isNaN(r) ? 0 : Math.max(0, Math.min(1, r)),
+            g: isNaN(g) ? 0 : Math.max(0, Math.min(1, g)),
+            b: isNaN(b) ? 0 : Math.max(0, Math.min(1, b))
+        };
+    }
+
+    // Fallback to black
+    return { r: 0, g: 0, b: 0 };
+}

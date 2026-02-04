@@ -3,7 +3,6 @@ import { DesignSystemInventory } from './auto-discovery';
 import { componentSelector } from './component-selector';
 import { promptBuilder } from './prompt-builder';
 import { selectRelevantExamples } from './example-library';
-import { promptManager } from './prompt-manager';
 import { conversationManager } from './conversation-manager';
 import { createAIError, ErrorCode } from '../types/errors';
 import { globalRateLimiter } from '../libs/rate-limiter';
@@ -108,17 +107,15 @@ export async function generateRSNT(
         console.log('Using conversation context (refinement mode)');
     }
 
-    // 4. Build prompt using active version
-    const version = promptManager.getActiveVersion();
-    const prompt = version.builder.build(
+    // 4. Build prompt
+    const prompt = promptBuilder.build(
         userIntent,
         inventory,
         selection.selected,
         examples,
-        conversationContext  // NEW: Add conversation context
+        conversationContext
     );
 
-    console.log(`Prompt version: ${version.version}`);
     console.log(`Prompt size: ${prompt.length} characters`);
     console.log(`Prompt tokens estimate: ${Math.ceil(prompt.length / 4)}`);
 
