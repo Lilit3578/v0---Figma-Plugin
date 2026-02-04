@@ -6,6 +6,7 @@ import { generateRSNT } from './services/ai-service';
 import { historyManager } from './services/history-manager';
 import { conversationManager } from './services/conversation-manager';
 import { analytics } from './services/analytics';
+import { resolutionTracker } from './services/resolution-tracker';
 
 figma.showUI(__html__, { width: 440, height: 600, themeColors: true });
 
@@ -71,6 +72,15 @@ figma.ui.onmessage = async (msg) => {
     return;
   }
 
+  // Approval Thresholds
+  const HIGH_CONFIDENCE_THRESHOLD = 0.9;
+  const MEDIUM_CONFIDENCE_THRESHOLD = 0.6;
+
+  // Track ghost nodes for approval flow
+  let ghostNodes: SceneNode[] = [];
+  let ghostRSNT: any = null;
+  let ghostIntent: string = '';
+
   // Generate design
   if (msg.type === 'generate') {
     const { intent, rsnt } = msg;
@@ -78,157 +88,325 @@ figma.ui.onmessage = async (msg) => {
     try {
       cancellationRequested = false;
       const startTime = Date.now();
+      resolutionTracker.reset(); // Reset resolution statistics
 
       if (!rsnt) {
         throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { intent }, 'No RSNT data received from UI');
       }
 
-      console.log('Rendering RSNT:', rsnt);
+      console.log('Received RSNT:', rsnt);
 
-      // Build validation context from current inventory
-      const validationContext = {
-        availableComponents: new Set(currentInventory?.components.map(c => c.id) || []),
-        availableVariables: new Set(currentInventory?.variables.map(v => v.id) || [])
-      };
+      // Get confidence score (default to 1.0 if missing to allow testing/legacy)
+      const confidence = rsnt.metadata?.confidence?.score ?? 1.0;
+      console.log(`Confidence Score: ${confidence}`);
 
-      // Validate
-      const validation = validateRSNT(rsnt, validationContext);
-      if (!validation.valid) {
-        // Collect all errors into a user-friendly format
-        const errorDetails = validation.errors.map(e => `[${e.code}] ${e.message} (${e.location})`).join('\n');
+      // --- DECISION TREE ---
 
-        figma.ui.postMessage({
-          type: 'error',
-          error: {
-            code: validation.errors[0]?.code || 0,
-            title: 'RSNT Validation Failed',
-            message: 'The design structure contains errors.',
-            guidance: validation.errors[0]?.guidance || 'Validation failed.',
-            suggestions: validation.errors[0]?.code ? [validation.errors[0].code === 1004 ? 'Try a simpler request' : 'Check technical details'] : ['Retry generation'],
-            technicalDetails: errorDetails,
-            category: 'RSNT_VALIDATION',
-            recoverable: true
+      // 1. High Confidence -> Auto-Execute
+      if (confidence >= HIGH_CONFIDENCE_THRESHOLD) {
+        console.log('Path: Auto-Execute (High Confidence)');
+        await handleAutoExecute(intent, rsnt, startTime);
+      }
+
+      // 2. Medium Confidence -> Ghost Preview
+      else if (confidence >= MEDIUM_CONFIDENCE_THRESHOLD) {
+        console.log('Path: Ghost Preview (Medium Confidence)');
+        await handleGhostPreview(intent, rsnt, startTime);
+      }
+
+      // 3. Low Confidence -> Clarification
+      else {
+        console.log('Path: Clarification (Low Confidence)');
+        handleClarification(intent, rsnt);
+      }
+
+    } catch (error: any) {
+      handleGenerationError(error);
+    }
+  }
+
+  // Handle Approval Actions
+  if (msg.type === 'approve-design') {
+    try {
+      // Unlock and fix opacity
+      if (ghostNodes.length > 0) {
+        for (const node of ghostNodes) {
+          try {
+            // Check if node still exists (not removed)
+            if (node.parent === null && node.removed) continue;
+
+            node.locked = false;
+            if ('opacity' in node) {
+              (node as any).opacity = 1;
+            }
+            if (node.name.startsWith('👻 ')) {
+              node.name = node.name.substring(3);
+            }
+          } catch (err) {
+            // Node likely deleted by user
+            console.warn('Could not update ghost node:', err);
           }
-        });
-        return;
-      }
+        }
 
-      // Show warnings if any
-      if (validation.warnings.length > 0) {
-        console.warn('Validation warnings:', validation.warnings);
+        // Finalize
+        figma.ui.postMessage({
+          type: 'complete',
+          message: '✓ Design approved and finalized'
+        });
+
+        // Add to history now that it's approved
+        if (ghostIntent && ghostRSNT) {
+          historyManager.addEntry(ghostIntent, ghostRSNT);
+          figma.ui.postMessage({
+            type: 'history-update',
+            ...historyManager.getHistoryState()
+          });
+        }
+
+        // Clear ghost state
+        ghostNodes = [];
+        ghostRSNT = null;
+        ghostIntent = '';
       }
+    } catch (e: any) {
+      console.error('Approval failed:', e);
+      figma.ui.postMessage({ type: 'error', message: 'Failed to approve design' });
+    }
+  }
+
+  if (msg.type === 'reject-design') {
+    // Delete ghost nodes
+    if (ghostNodes.length > 0) {
+      for (const node of ghostNodes) {
+        try {
+          node.remove();
+        } catch (e) {
+          // Ignore if already removed
+        }
+      }
+      ghostNodes = [];
+    }
+    ghostRSNT = null;
+    ghostIntent = '';
+
+    figma.ui.postMessage({
+      type: 'status',
+      status: 'success', // Just clear status
+      message: 'Design rejected'
+    });
+  }
+
+  // --- Helper Functions ---
+
+  async function handleAutoExecute(intent: string, rsnt: any, startTime: number) {
+    const result = await performRender(rsnt, intent, startTime);
+
+    if (result) {
+      // Show success with Undo option
+      figma.ui.postMessage({
+        type: 'complete',
+        message: result.message,
+        showUndo: true // Tell UI to show special Undo toast if needed
+      });
 
       // Add to history
       historyManager.addEntry(intent, rsnt);
-
-      // Add to conversation
-      conversationManager.addTurn(intent, rsnt, 'v1.0');
-
-      // Track analytics
-      analytics.trackGeneration();
-
-      // Render
-      figma.ui.postMessage({ type: 'status', status: 'loading', message: 'Creating design...' });
-
-      // Call renderRSNT with progress and cancellation callbacks
-      const renderResult = await renderRSNT(
-        rsnt,
-        undefined,
-        (progress) => {
-          const percentage = Math.round((progress.current / progress.total) * 100);
-          figma.ui.postMessage({
-            type: 'generation-progress',
-            current: progress.current,
-            total: progress.total,
-            percentage
-          });
-        },
-        () => cancellationRequested
-      );
-
-      const duration = Date.now() - startTime;
-      console.log(`Generation completed in ${duration}ms`);
-
-      const rootNode = renderResult.node;
-
-      // Track component usage from RSNT
-      trackComponentsInRSNT(rootNode, intent);
-
-      // Save analytics
-      await analytics.save();
-
-      // Check for rendering errors
-      if (renderResult.errors.length > 0) {
-        console.error('Rendering errors:', renderResult.errors);
-        figma.ui.postMessage({
-          type: 'render-errors',
-          errors: renderResult.errors
-        });
-      }
-
-      // Show warnings if any
-      if (renderResult.warnings.length > 0) {
-        console.warn('Rendering warnings:', renderResult.warnings);
-        figma.ui.postMessage({
-          type: 'render-warnings',
-          warnings: renderResult.warnings
-        });
-      }
-
-      // Position on canvas
-      rootNode.x = figma.viewport.center.x - rootNode.width / 2;
-      rootNode.y = figma.viewport.center.y - rootNode.height / 2;
-
-      figma.currentPage.appendChild(rootNode);
-      figma.currentPage.selection = [rootNode];
-      figma.viewport.scrollAndZoomIntoView([rootNode]);
-
-      const successMessage = renderResult.errors.length > 0 || renderResult.warnings.length > 0
-        ? `✓ Design generated with ${renderResult.warnings.length} warnings and ${renderResult.errors.length} errors (${duration}ms)`
-        : `✓ Design generated successfully (${duration}ms)`;
-
-      figma.ui.postMessage({
-        type: 'complete',
-        message: successMessage
-      });
-
-      // Send updated history state
       figma.ui.postMessage({
         type: 'history-update',
         ...historyManager.getHistoryState()
       });
+    }
+  }
 
-    } catch (error: any) {
-      if (error.message === 'Operation cancelled') {
-        console.log('Generation cancelled by user');
-        figma.ui.postMessage({
-          type: 'error',
-          error: {
-            title: 'Generation Cancelled',
-            message: 'The design generation was cancelled by your request.',
-            code: ErrorCode.GENERATION_CANCELLED,
-            guidance: '',
-            suggestions: [],
-            category: 'EXECUTION',
-            recoverable: true
-          }
-        });
-        return;
+  async function handleGhostPreview(intent: string, rsnt: any, startTime: number) {
+    // Create a ghost version of RSNT or just modify render properties
+    // Since renderRSNT takes RSNT, let's clone it and modify root properties if possible, 
+    // OR just render and then modify the nodes.
+    // Modifying nodes after render is safer/easier.
+
+    const result = await performRender(rsnt, intent, startTime);
+
+    if (result && result.rootNode) {
+      const root = result.rootNode;
+
+      // Apply Ghost Effects
+      if ('opacity' in root) {
+        (root as any).opacity = 0.6;
       }
+      root.locked = true;
+      root.name = "👻 " + root.name;
 
-      console.error('Generation failed:', error);
+      // Store for later access
+      ghostNodes = [root];
+      ghostRSNT = rsnt;
+      ghostIntent = intent;
 
-      // Use formatError to provide user-friendly error messages
-      const userError = formatError(error, {
-        componentId: error.details?.componentId,
-        variableId: error.details?.variableId
+      // Send Approval Dialog Request
+      figma.ui.postMessage({
+        type: 'show-approval-dialog',
+        confidence: rsnt.metadata?.confidence,
+        reasoning: rsnt.metadata?.reasoning,
+        designDecisions: rsnt.metadata?.designDecisions,
+        warnings: rsnt.metadata?.warnings || [] // Logic might need to be added to extract warnings
       });
+    }
+  }
+
+  function handleClarification(intent: string, rsnt: any) {
+    // Do not render
+    figma.ui.postMessage({
+      type: 'show-clarification-dialog',
+      confidence: rsnt.metadata?.confidence,
+      uncertainties: rsnt.metadata?.uncertainties,
+      questions: [] // Generated questions (can be added later)
+    });
+  }
+
+  async function performRender(rsnt: any, intent: string, startTime: number) {
+    // Build validation context from current inventory
+    const validationContext = {
+      availableComponents: new Set(currentInventory?.components.map(c => c.id) || []),
+      availableVariables: new Set(currentInventory?.variables.map(v => v.id) || [])
+    };
+
+    // Validate
+    const validation = validateRSNT(rsnt, validationContext);
+    if (!validation.valid) {
+      // Collect all errors into a user-friendly format
+      const errorDetails = validation.errors.map(e => `[${e.code}] ${e.message} (${e.location})`).join('\n');
 
       figma.ui.postMessage({
         type: 'error',
-        error: userError
+        error: {
+          code: validation.errors[0]?.code || 0,
+          title: 'RSNT Validation Failed',
+          message: 'The design structure contains errors.',
+          guidance: validation.errors[0]?.guidance || 'Validation failed.',
+          suggestions: validation.errors[0]?.code ? [validation.errors[0].code === 1004 ? 'Try a simpler request' : 'Check technical details'] : ['Retry generation'],
+          technicalDetails: errorDetails,
+          category: 'RSNT_VALIDATION',
+          recoverable: true
+        }
+      });
+      return null;
+    }
+
+    // Show warnings if any
+    if (validation.warnings.length > 0) {
+      console.warn('Validation warnings:', validation.warnings);
+    }
+
+    // Add to conversation
+    conversationManager.addTurn(intent, rsnt, 'v1.0');
+
+    // Track analytics
+    analytics.trackGeneration();
+
+    // Render
+    figma.ui.postMessage({ type: 'status', status: 'loading', message: 'Creating design...' });
+
+    // Call renderRSNT with progress and cancellation callbacks
+    const renderResult = await renderRSNT(
+      rsnt,
+      undefined,
+      (progress) => {
+        const percentage = Math.round((progress.current / progress.total) * 100);
+        figma.ui.postMessage({
+          type: 'generation-progress',
+          current: progress.current,
+          total: progress.total,
+          percentage
+        });
+      },
+      () => cancellationRequested
+    );
+
+    const duration = Date.now() - startTime;
+    console.log(`Generation completed in ${duration}ms`);
+
+    const rootNode = renderResult.node;
+
+    // Track component usage from RSNT
+    trackComponentsInRSNT(rootNode, intent);
+
+    // Save analytics
+    await analytics.save();
+
+    // Check for rendering errors
+    if (renderResult.errors.length > 0) {
+      console.error('Rendering errors:', renderResult.errors);
+      figma.ui.postMessage({
+        type: 'render-errors',
+        errors: renderResult.errors
       });
     }
+
+    // Show warnings if any
+    if (renderResult.warnings.length > 0) {
+      console.warn('Rendering warnings:', renderResult.warnings);
+      figma.ui.postMessage({
+        type: 'render-warnings',
+        warnings: renderResult.warnings
+      });
+    }
+
+    // Position on canvas
+    rootNode.x = figma.viewport.center.x - rootNode.width / 2;
+    rootNode.y = figma.viewport.center.y - rootNode.height / 2;
+
+    // Generate Resolution Summary
+    const summary = resolutionTracker.createSummary();
+
+    // Attach summary to root node
+    rootNode.setPluginData('resolution-summary', JSON.stringify(summary));
+
+    // Send summary to UI
+    figma.ui.postMessage({
+      type: 'show-summary',
+      summary
+    });
+
+    figma.currentPage.appendChild(rootNode);
+    figma.currentPage.selection = [rootNode];
+    figma.viewport.scrollAndZoomIntoView([rootNode]);
+
+    const successMessage = renderResult.errors.length > 0 || renderResult.warnings.length > 0
+      ? `✓ Design generated with ${renderResult.warnings.length} warnings and ${renderResult.errors.length} errors (${duration}ms)`
+      : `✓ Design generated successfully (${duration}ms)`;
+
+    return { message: successMessage, rootNode };
+  }
+
+  function handleGenerationError(error: any) {
+    if (error.message === 'Operation cancelled') {
+      console.log('Generation cancelled by user');
+      figma.ui.postMessage({
+        type: 'error',
+        error: {
+          title: 'Generation Cancelled',
+          message: 'The design generation was cancelled by your request.',
+          code: ErrorCode.GENERATION_CANCELLED,
+          guidance: '',
+          suggestions: [],
+          category: 'EXECUTION',
+          recoverable: true
+        }
+      });
+      return;
+    }
+
+    console.error('Generation failed:', error);
+
+    // Use formatError to provide user-friendly error messages
+    const userError = formatError(error, {
+      componentId: error.details?.componentId,
+      variableId: error.details?.variableId
+    });
+
+    figma.ui.postMessage({
+      type: 'error',
+      error: userError
+    });
   }
 
   // Refresh inventory

@@ -302,10 +302,15 @@ ${JSON.stringify(fullExample, null, 2)}
 
         console.log(`Prompt complexity: ${complexity}`);
 
+        // If conversation context is present, we put it very early to frame the task as a modification
+        const contextSection = conversationContext ?
+            `\n${conversationContext}\n\nIMPORTANT: YOU ARE MODIFYING AN EXISTING DESIGN. USE THE PROVIDED JSON AS YOUR STARTING POINT.` :
+            '';
+
         const sections = [
             this.systemPrompt,
             '',
-            conversationContext || '',
+            contextSection,
             '',
             this.buildContext(inventory, selectedComponents),
             '',

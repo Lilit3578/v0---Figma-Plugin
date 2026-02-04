@@ -60,6 +60,16 @@ export interface RSNT_Node {
     semanticRole?: string;
     layoutPrimitive?: string;
     tailwindClasses?: string[];
+
+    // Metadata
+    metadata?: {
+        confidence?: {
+            score: number;
+            factors?: any; // Avoiding circular dependency, will be ConfidenceFactors
+            breakdown?: string[];
+        };
+        [key: string]: any;
+    };
 }
 
 export interface ValidationContext {

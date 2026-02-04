@@ -11,6 +11,11 @@
 
 import { RSNT_Node } from '../types/rsnt';
 import { DesignSystemInventory, ComponentInfo, VariableInfo } from './auto-discovery';
+import { componentSelector } from './component-selector';
+import * as variableResolver from './variable-resolver';
+import * as primitiveScanner from './primitive-scanner';
+import { resolutionTracker } from './resolution-tracker';
+import { WarningCategory, WarningSeverity } from '../types/resolution-types';
 import { TAILWIND_DEFAULTS, getTailwindColor, getTailwindSpacing, getTailwindRadius } from '../constants/tailwind-defaults';
 import { normalizeColor } from '../libs/color-utils';
 import { propertyMappingService } from './property-mapping';
@@ -19,77 +24,27 @@ import { propertyMappingService } from './property-mapping';
 // INTERFACES
 // ============================================================================
 
-/**
- * Result of resolving a single RSNT node
- */
-export interface ResolutionResult {
-    success: boolean;
-    tier: 1 | 2 | 3 | 4 | 5;
-    method: string;
-    instructions: ExecutionInstructions;
-    confidence: number;
-    warnings: string[];
-    metadata?: {
-        nodeId: string;
-        timeMs: number;
-        fallbackReason?: string;
-    };
-}
+import {
+    ResolutionResult,
+    ExecutionInstructions,
+    ComponentInstructions,
+    FrameInstructions,
+    StructuralMatchCandidate,
+    OverrideSafetyReport,
+    ResolutionStats, // importing the analytics one, but we use CollectorStats locally
+    WarningAggregation
+} from '../types/resolution-types';
+
+import { resolveAllConflicts, applyResolutionToInstructions } from './conflicts';
 
 /**
- * Instructions for rendering engine to execute
+ * Statistics for resolution performance (Collector version)
  */
-export type ExecutionInstructions = ComponentInstructions | FrameInstructions;
-
-/**
- * Instructions to instantiate a component
- */
-export interface ComponentInstructions {
-    type: 'INSTANTIATE_COMPONENT';
-    componentId: string;
-    properties: Record<string, any>;
-    overrides?: {
-        fills?: any[];
-        strokes?: any[];
-        text?: string;
-        padding?: { top: number; right: number; bottom: number; left: number };
-    };
-}
-
-/**
- * Instructions to create a frame from scratch
- */
-export interface FrameInstructions {
-    type: 'CREATE_FRAME';
-    layoutMode: 'HORIZONTAL' | 'VERTICAL' | 'NONE';
-    styling: {
-        fills?: any[];
-        strokes?: any[];
-        cornerRadius?: number;
-        padding?: { top: number; right: number; bottom: number; left: number };
-    };
-    variableBindings?: Record<string, string>;
-    primitiveValues?: Record<string, any>;
-}
-
-/**
- * Statistics for resolution performance
- */
-export interface ResolutionStats {
+export interface CollectorStats {
     tierCounts: Record<1 | 2 | 3 | 4 | 5, number>;
     averageConfidence: Record<1 | 2 | 3 | 4 | 5, number>;
     totalNodes: number;
     totalTimeMs: number;
-}
-
-/**
- * Aggregated warnings from resolution
- */
-export interface WarningAggregation {
-    componentWarnings: { message: string; count: number }[];
-    variableWarnings: { message: string; count: number }[];
-    approximationWarnings: { message: string; count: number }[];
-    summary: string;
 }
 
 // ============================================================================
@@ -97,13 +52,27 @@ export interface WarningAggregation {
 // ============================================================================
 
 const FALLBACK_REASONS = {
+    tier1: {
+        noMatch: 'No matching component',
+        insufficientMappings: 'Insufficient property mappings (<70%)',
+        lowConfidence: 'Low confidence (<0.7)'
+    },
     tier2: {
-        noMatchingRole: 'No exact component match found (no matching semantic role). Using structurally similar component.',
+        noStructuralMatch: 'No structural match',
+        overrideSafetyFailed: 'Override safety check failed',
+        noMatchingRole: 'No exact component match found (no matching semantic role). Using structurally similar component.', // Kept for backward compat if needed
         insufficientMappings: 'No exact component match found (insufficient property mappings). Using structurally similar component.',
     },
-    tier3: 'No matching components found. Building from scratch with design tokens.',
-    tier4: 'Insufficient design tokens. Using closest available colors/spacing from file.',
-    tier5: 'No design system assets found. Using generic Tailwind defaults.',
+    tier3: {
+        insufficientVariables: 'Insufficient variables (<70% resolved)',
+        lowConfidence: 'Low variable confidence',
+        general: 'No matching components found. Building from scratch with design tokens.'
+    },
+    tier4: {
+        poorApproximation: 'Approximations too poor (<0.35 confidence)',
+        general: 'Insufficient design tokens. Using closest available colors/spacing from file.'
+    },
+    tier5: 'Using system defaults',
 };
 
 // ============================================================================
@@ -205,53 +174,179 @@ async function tryTier1ExactMatch(
 // ============================================================================
 
 /**
- * Tier 2: Find structurally similar component and apply overrides
- * Confidence: 0.65-0.75
+ * Calculate structural match score for a component candidate
+ * Scoring breakdown:
+ * - Layout match: +40 points
+ * - Alignment match: +30 points
+ * - Flexibility indicator: +20 points
+ * - Simple structure: +10 points
+ * Total: 100 points max
  */
-async function tryTier2StructuralMatch(
+function calculateStructuralMatchScore(
     node: RSNT_Node,
-    inventory: DesignSystemInventory
-): Promise<ResolutionResult | null> {
-    // 1. Find components with matching layout primitive
-    const candidates = inventory.components.filter(
-        (c) => c.anatomy?.layoutInfo?.mode === node.layoutMode
-    );
+    component: ComponentInfo
+): StructuralMatchCandidate {
+    let score = 0;
+    const matchDetails = {
+        layoutMatch: false,
+        alignmentMatch: false,
+        flexibilityIndicator: false,
+        simpleStructure: false,
+    };
 
-    if (candidates.length === 0) {
-        return null;
+    // 1. Layout mode match (+40 points)
+    if (component.anatomy?.layoutInfo?.mode === node.layoutMode) {
+        score += 40;
+        matchDetails.layoutMatch = true;
     }
 
-    // 2. Filter for flexible components (Base, Slot, Template, Container)
-    const flexibleCandidates = candidates.filter((c) =>
-        /Base|Slot|Template|Container/i.test(c.name)
-    );
+    // 2. Alignment match (+30 points)
+    // Check both primary and counter axis alignment
+    if (component.anatomy?.layoutInfo) {
+        const layoutInfo = component.anatomy.layoutInfo;
 
-    if (flexibleCandidates.length === 0) {
-        return null;
-    }
+        // Map RSNT alignment to Figma alignment
+        const primaryMatch =
+            (node.primaryAxisAlignItems === 'CENTER' && layoutInfo.primaryAxisAlignItems === 'CENTER') ||
+            (node.primaryAxisAlignItems === 'MIN' && layoutInfo.primaryAxisAlignItems === 'MIN') ||
+            (node.primaryAxisAlignItems === 'MAX' && layoutInfo.primaryAxisAlignItems === 'MAX') ||
+            (node.primaryAxisAlignItems === 'SPACE_BETWEEN' && layoutInfo.primaryAxisAlignItems === 'SPACE_BETWEEN');
 
-    // 3. Generate override instructions
-    for (const candidate of flexibleCandidates) {
-        const overrides = generateOverrides(node, candidate);
+        const counterMatch =
+            (node.counterAxisAlignItems === 'CENTER' && layoutInfo.counterAxisAlignItems === 'CENTER') ||
+            (node.counterAxisAlignItems === 'MIN' && layoutInfo.counterAxisAlignItems === 'MIN') ||
+            (node.counterAxisAlignItems === 'MAX' && layoutInfo.counterAxisAlignItems === 'MAX');
 
-        if (validateOverrideCompatibility(overrides, candidate)) {
-            return {
-                success: true,
-                tier: 2,
-                method: 'structural_match',
-                instructions: {
-                    type: 'INSTANTIATE_COMPONENT',
-                    componentId: candidate.id,
-                    properties: {},
-                    overrides,
-                },
-                confidence: 0.7,
-                warnings: ['Using base component with overrides - may not match brand exactly'],
-            };
+        if (primaryMatch && counterMatch) {
+            score += 30;
+            matchDetails.alignmentMatch = true;
+        } else if (primaryMatch || counterMatch) {
+            score += 15; // Partial credit
         }
     }
 
-    return null;
+    // 3. Flexibility indicator in name (+20 points)
+    if (/base|slot|template|container|generic/i.test(component.name)) {
+        score += 20;
+        matchDetails.flexibilityIndicator = true;
+    }
+
+    // 4. Simple structure (+10 points)
+    // Components with fewer children are more flexible
+    const childCount = component.anatomy?.layerCount || 0;
+    if (childCount < 5) {
+        score += 10;
+        matchDetails.simpleStructure = true;
+    }
+
+    // Calculate confidence (0.65-0.75 range for Tier 2)
+    const rawConfidence = score / 100;
+    const confidence = 0.65 + (rawConfidence * 0.10); // Scale to 0.65-0.75
+
+    return {
+        component,
+        score,
+        confidence,
+        matchDetails,
+    };
+}
+
+/**
+ * Find structural match candidates and rank by score
+ * Returns top 3 candidates
+ */
+function findStructuralMatches(
+    node: RSNT_Node,
+    inventory: DesignSystemInventory
+): StructuralMatchCandidate[] {
+    console.log(`[Tier 2] Searching for structural matches...`);
+    console.log(`[Tier 2] Target layout: ${node.layoutMode}, alignment: ${node.primaryAxisAlignItems}/${node.counterAxisAlignItems}`);
+
+    // 1. Filter components by layout mode
+    const layoutMatches = inventory.components.filter(
+        (c) => c.anatomy?.layoutInfo?.mode === node.layoutMode
+    );
+
+    console.log(`[Tier 2] Found ${layoutMatches.length} component(s) with matching layout mode`);
+
+    if (layoutMatches.length === 0) {
+        return [];
+    }
+
+    // 2. Score all candidates
+    const scoredCandidates = layoutMatches.map((component) =>
+        calculateStructuralMatchScore(node, component)
+    );
+
+    // 3. Sort by score (descending)
+    scoredCandidates.sort((a, b) => b.score - a.score);
+
+    // 4. Return top 3
+    const topCandidates = scoredCandidates.slice(0, 3);
+
+    console.log(`[Tier 2] Top candidates:`);
+    topCandidates.forEach((candidate, idx) => {
+        console.log(`  ${idx + 1}. ${candidate.component.name} (score: ${candidate.score}/100, confidence: ${(candidate.confidence * 100).toFixed(0)}%)`);
+        console.log(`     Layout: ${candidate.matchDetails.layoutMatch ? '✓' : '✗'}, Alignment: ${candidate.matchDetails.alignmentMatch ? '✓' : '✗'}, Flexible: ${candidate.matchDetails.flexibilityIndicator ? '✓' : '✗'}, Simple: ${candidate.matchDetails.simpleStructure ? '✓' : '✗'}`);
+    });
+
+    return topCandidates;
+}
+
+/**
+ * Validate that overrides won't break the component
+ * Performs virtual testing of override compatibility
+ */
+function validateOverrideCompatibility(
+    overrides: ComponentInstructions['overrides'],
+    component: ComponentInfo
+): OverrideSafetyReport {
+    const testResults = {
+        textChange: true,
+        fillChange: true,
+        paddingChange: true,
+    };
+    const unsafeProperties: string[] = [];
+
+    // Test 1: Text override safety
+    if (overrides?.text) {
+        // Check if component has text nodes that can be overridden
+        const hasTextNodes = component.anatomy?.hasLabel || (component.anatomy?.textNodeCount ?? 0) > 0;
+        if (!hasTextNodes) {
+            testResults.textChange = false;
+            unsafeProperties.push('text (no text nodes found)');
+        }
+    }
+
+    // Test 2: Fill override safety
+    if (overrides?.fills) {
+        // Most components can accept fill overrides
+        // Only fail if component has complex nested fills or is an icon
+        const isIcon = /icon/i.test(component.name) || component.anatomy?.hasIcon;
+        if (isIcon) {
+            testResults.fillChange = false;
+            unsafeProperties.push('fills (icon component - may break visual)');
+        }
+    }
+
+    // Test 3: Padding override safety
+    if (overrides?.padding) {
+        // Check if component uses auto layout (can accept padding changes)
+        const hasAutoLayout = component.anatomy?.layoutInfo?.mode !== 'NONE';
+        if (!hasAutoLayout) {
+            testResults.paddingChange = false;
+            unsafeProperties.push('padding (no auto layout)');
+        }
+    }
+
+    // Overall safety: all tests must pass
+    const safe = testResults.textChange && testResults.fillChange && testResults.paddingChange;
+
+    return {
+        safe,
+        unsafeProperties,
+        testResults,
+    };
 }
 
 /**
@@ -304,15 +399,66 @@ function generateOverrides(
 }
 
 /**
- * Validate that overrides won't break the component
+ * Tier 2: Find structurally similar component and apply overrides
+ * Confidence: 0.65-0.75
  */
-function validateOverrideCompatibility(
-    overrides: ComponentInstructions['overrides'],
-    component: ComponentInfo
-): boolean {
-    // For now, assume all flexible components accept overrides
-    // In the future, could check component structure
-    return true;
+async function tryTier2StructuralMatch(
+    node: RSNT_Node,
+    inventory: DesignSystemInventory
+): Promise<ResolutionResult | null> {
+    console.log(`[Tier 2] Starting structural match for node "${node.name || node.id}"`);
+
+    // 1. Find and rank structural match candidates
+    const candidates = findStructuralMatches(node, inventory);
+
+    if (candidates.length === 0) {
+        console.log(`[Tier 2] No structural matches found, falling back to Tier 3`);
+        return null;
+    }
+
+    // 2. Test each candidate for override compatibility
+    for (const candidate of candidates) {
+        console.log(`[Tier 2] Testing candidate: ${candidate.component.name}`);
+
+        // Generate overrides
+        const overrides = generateOverrides(node, candidate.component);
+        console.log(`[Tier 2] Generated overrides: ${overrides ? Object.keys(overrides).join(', ') : 'none'}`);
+
+        // Validate override safety
+        const safetyReport = validateOverrideCompatibility(overrides, candidate.component);
+        console.log(`[Tier 2] Safety check: ${safetyReport.safe ? '✓ SAFE' : '✗ UNSAFE'}`);
+
+        if (!safetyReport.safe) {
+            console.log(`[Tier 2] Unsafe properties: ${safetyReport.unsafeProperties.join(', ')}`);
+            console.log(`[Tier 2] Rejecting ${candidate.component.name}, trying next candidate...`);
+            continue;
+        }
+
+        // Found a compatible match!
+        console.log(`[Tier 2] ✓ Selected: ${candidate.component.name} (score: ${candidate.score}/100)`);
+        console.log(`[Tier 2] Match details: Layout=${candidate.matchDetails.layoutMatch}, Alignment=${candidate.matchDetails.alignmentMatch}, Flexible=${candidate.matchDetails.flexibilityIndicator}, Simple=${candidate.matchDetails.simpleStructure}`);
+
+        return {
+            success: true,
+            tier: 2,
+            method: 'structural_match',
+            instructions: {
+                type: 'INSTANTIATE_COMPONENT',
+                componentId: candidate.component.id,
+                properties: {},
+                overrides,
+            },
+            confidence: candidate.confidence,
+            warnings: [
+                `Using base component "${candidate.component.name}" with overrides - styling may not match brand exactly`,
+                `Match score: ${candidate.score}/100 (${Object.entries(candidate.matchDetails).filter(([_, v]) => v).map(([k]) => k).join(', ')})`
+            ],
+        };
+    }
+
+    // No compatible candidates found
+    console.log(`[Tier 2] All candidates failed safety checks, falling back to Tier 3`);
+    return null;
 }
 
 // ============================================================================
@@ -485,84 +631,165 @@ function listUnresolvedClasses(
 // TIER 4: PRIMITIVE FALLBACK
 // ============================================================================
 
+import {
+    getCachedPrimitiveInventory,
+    findClosestColor,
+    findClosestSpacing,
+    findClosestRadius,
+    generateColorWarning,
+    generateSpacingWarning,
+    generateRadiusWarning,
+    type ColorMatch,
+    type SpacingMatch,
+    type RadiusMatch
+} from './primitive-scanner';
+
 /**
  * Tier 4: Use closest available primitive values from file
- * Confidence: 0.4-0.6
+ * Confidence: 0.35-0.60
  */
 async function tryTier4PrimitiveFallback(
     node: RSNT_Node
 ): Promise<ResolutionResult | null> {
-    // 1. Scan file for primitive values
-    const primitives = await scanFilePrimitives();
+    console.log(`[Tier 4] Starting primitive fallback for node "${node.name || node.id}"`);
 
-    if (primitives.colors.length === 0 && primitives.spacing.length === 0) {
+    // 1. Get cached primitive inventory
+    const inventory = await getCachedPrimitiveInventory();
+
+    if (inventory.colors.size === 0 && inventory.spacing.size === 0 && inventory.radii.size === 0) {
+        console.log(`[Tier 4] No primitives found in file, falling back to Tier 5`);
         return null;
     }
 
-    // 2. Build frequency map
-    const frequencyMap = buildFrequencyMap(primitives);
-
-    // 3. Find closest primitives for each requirement
+    // 2. Build styling from primitive matches
     const styling: FrameInstructions['styling'] = {};
+    const warnings: string[] = [];
+    const confidences: number[] = [];
 
-    // Find closest color for fills
+    // Match fills (background colors)
     if (node.fills && node.fills.length > 0) {
         const firstFill = node.fills[0];
         if (firstFill.type === 'SOLID' && firstFill.color) {
-            const hexColor = rgbToHex(firstFill.color);
-            const closestColor = findClosestColor(hexColor, primitives.colors, frequencyMap.colors);
-            if (closestColor) {
-                styling.fills = [{ type: 'SOLID', color: normalizeColor(closestColor) }];
+            const targetHex = rgbToHex(firstFill.color);
+            const colorMatch = findClosestColor(targetHex, inventory.colors);
+
+            if (colorMatch) {
+                console.log(`[Tier 4] Fill color: ${targetHex} -> ${colorMatch.color} (ΔE = ${colorMatch.deltaE.toFixed(1)}, confidence = ${(colorMatch.confidence * 100).toFixed(0)}%)`);
+
+                styling.fills = [{ type: 'SOLID', color: normalizeColor(colorMatch.color) }];
+                confidences.push(colorMatch.confidence);
+
+                if (colorMatch.deltaE > 0.5) {
+                    warnings.push(generateColorWarning(targetHex, colorMatch));
+                }
+            } else {
+                console.log(`[Tier 4] No suitable fill color found (all ΔE >= 10)`);
             }
         }
     }
 
-    // Find closest color for strokes
+    // Match strokes (border colors)
     if (node.strokes && node.strokes.length > 0) {
         const firstStroke = node.strokes[0];
         if (firstStroke.type === 'SOLID' && firstStroke.color) {
-            const hexColor = rgbToHex(firstStroke.color);
-            const closestColor = findClosestColor(hexColor, primitives.colors, frequencyMap.colors);
-            if (closestColor) {
-                styling.strokes = [{ type: 'SOLID', color: normalizeColor(closestColor) }];
+            const targetHex = rgbToHex(firstStroke.color);
+            const colorMatch = findClosestColor(targetHex, inventory.colors);
+
+            if (colorMatch) {
+                console.log(`[Tier 4] Stroke color: ${targetHex} -> ${colorMatch.color} (ΔE = ${colorMatch.deltaE.toFixed(1)}, confidence = ${(colorMatch.confidence * 100).toFixed(0)}%)`);
+
+                styling.strokes = [{ type: 'SOLID', color: normalizeColor(colorMatch.color) }];
+                confidences.push(colorMatch.confidence);
+
+                if (colorMatch.deltaE > 0.5) {
+                    warnings.push(generateColorWarning(targetHex, colorMatch));
+                }
+            } else {
+                console.log(`[Tier 4] No suitable stroke color found (all ΔE >= 10)`);
             }
         }
     }
 
-    // Find closest spacing for padding
+    // Match padding
     if (node.padding) {
-        // Extract numeric values from padding
         const extractNumeric = (val: number | { variableId: string } | undefined): number => {
             if (typeof val === 'number') return val;
             return 0;
         };
 
-        const avgPadding = (
-            extractNumeric(node.padding.top) +
-            extractNumeric(node.padding.right) +
-            extractNumeric(node.padding.bottom) +
-            extractNumeric(node.padding.left)
-        ) / 4;
+        const paddingValues = {
+            top: extractNumeric(node.padding.top),
+            right: extractNumeric(node.padding.right),
+            bottom: extractNumeric(node.padding.bottom),
+            left: extractNumeric(node.padding.left)
+        };
 
-        const closestSpacing = findClosestSpacing(avgPadding, primitives.spacing, frequencyMap.spacing);
-        if (closestSpacing !== null) {
-            styling.padding = {
-                top: closestSpacing,
-                right: closestSpacing,
-                bottom: closestSpacing,
-                left: closestSpacing,
-            };
+        // Try to match each padding value individually
+        const matchedPadding: { top: number; right: number; bottom: number; left: number } = {
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0
+        };
+
+        for (const [side, targetValue] of Object.entries(paddingValues) as [keyof typeof paddingValues, number][]) {
+            if (targetValue > 0) {
+                const spacingMatch = findClosestSpacing(targetValue, inventory.spacing);
+
+                if (spacingMatch) {
+                    console.log(`[Tier 4] Padding ${side}: ${targetValue}px -> ${spacingMatch.value}px (distance = ${spacingMatch.distance}px, confidence = ${(spacingMatch.confidence * 100).toFixed(0)}%)`);
+
+                    matchedPadding[side] = spacingMatch.value;
+                    confidences.push(spacingMatch.confidence);
+
+                    if (spacingMatch.distance > 0) {
+                        warnings.push(generateSpacingWarning(targetValue, spacingMatch, `Padding ${side}`));
+                    }
+                }
+            }
+        }
+
+        // Only set padding if at least one side was matched
+        if (matchedPadding.top > 0 || matchedPadding.right > 0 || matchedPadding.bottom > 0 || matchedPadding.left > 0) {
+            styling.padding = matchedPadding;
         }
     }
 
-    // Find closest radius
+    // Match corner radius
     if (node.cornerRadius !== undefined) {
         const numericRadius = typeof node.cornerRadius === 'number' ? node.cornerRadius : 0;
-        const closestRadius = findClosestSpacing(numericRadius, primitives.radii, frequencyMap.radii);
-        if (closestRadius !== null) {
-            styling.cornerRadius = closestRadius;
+
+        if (numericRadius > 0) {
+            const radiusMatch = findClosestRadius(numericRadius, inventory.radii);
+
+            if (radiusMatch) {
+                console.log(`[Tier 4] Corner radius: ${numericRadius}px -> ${radiusMatch.value}px (distance = ${radiusMatch.distance}px, confidence = ${(radiusMatch.confidence * 100).toFixed(0)}%)`);
+
+                styling.cornerRadius = radiusMatch.value;
+                confidences.push(radiusMatch.confidence);
+
+                if (radiusMatch.distance > 0) {
+                    warnings.push(generateRadiusWarning(numericRadius, radiusMatch));
+                }
+            }
         }
     }
+
+    // 3. Calculate aggregate confidence
+    const aggregateConfidence = confidences.length > 0
+        ? confidences.reduce((sum, c) => sum + c, 0) / confidences.length
+        : 0;
+
+    console.log(`[Tier 4] Aggregate confidence: ${(aggregateConfidence * 100).toFixed(0)}% (threshold: 35%)`);
+
+    // 4. Check if confidence meets threshold
+    if (aggregateConfidence < 0.35) {
+        console.log(`[Tier 4] Confidence too low, falling back to Tier 5`);
+        return null;
+    }
+
+    // 5. Return result
+    console.log(`[Tier 4] ✓ Success with ${confidences.length} primitive matches`);
 
     return {
         success: true,
@@ -574,170 +801,13 @@ async function tryTier4PrimitiveFallback(
             styling,
             primitiveValues: styling,
         },
-        confidence: 0.5,
-        warnings: ['Using closest available values - no design tokens found'],
+        confidence: aggregateConfidence,
+        warnings,
     };
 }
 
 /**
- * Scan current Figma file for primitive values
- */
-async function scanFilePrimitives(): Promise<{
-    colors: string[];
-    spacing: number[];
-    radii: number[];
-}> {
-    const colors = new Set<string>();
-    const spacing = new Set<number>();
-    const radii = new Set<number>();
-
-    // Scan all nodes in the current page
-    function scanNode(node: SceneNode) {
-        // Extract fills
-        if ('fills' in node && Array.isArray(node.fills)) {
-            for (const fill of node.fills) {
-                if (fill.type === 'SOLID' && fill.color) {
-                    const hex = rgbToHex(fill.color);
-                    colors.add(hex);
-                }
-            }
-        }
-
-        // Extract strokes
-        if ('strokes' in node && Array.isArray(node.strokes)) {
-            for (const stroke of node.strokes) {
-                if (stroke.type === 'SOLID' && stroke.color) {
-                    const hex = rgbToHex(stroke.color);
-                    colors.add(hex);
-                }
-            }
-        }
-
-        // Extract padding (from auto layout)
-        if ('paddingTop' in node) {
-            spacing.add(node.paddingTop);
-            spacing.add(node.paddingRight);
-            spacing.add(node.paddingBottom);
-            spacing.add(node.paddingLeft);
-        }
-
-        // Extract corner radius
-        if ('cornerRadius' in node && typeof node.cornerRadius === 'number') {
-            radii.add(node.cornerRadius);
-        }
-
-        // Recurse into children
-        if ('children' in node) {
-            for (const child of node.children) {
-                scanNode(child);
-            }
-        }
-    }
-
-    for (const node of figma.currentPage.children) {
-        scanNode(node);
-    }
-
-    return {
-        colors: Array.from(colors),
-        spacing: Array.from(spacing).filter((v) => v > 0),
-        radii: Array.from(radii).filter((v) => v > 0),
-    };
-}
-
-/**
- * Build frequency map for primitive values
- */
-function buildFrequencyMap(primitives: {
-    colors: string[];
-    spacing: number[];
-    radii: number[];
-}): {
-    colors: Map<string, number>;
-    spacing: Map<number, number>;
-    radii: Map<number, number>;
-} {
-    // For now, assume equal frequency
-    // In the future, could scan entire file and count occurrences
-    return {
-        colors: new Map(primitives.colors.map((c) => [c, 1])),
-        spacing: new Map(primitives.spacing.map((s) => [s, 1])),
-        radii: new Map(primitives.radii.map((r) => [r, 1])),
-    };
-}
-
-/**
- * Find closest color using Delta E
- */
-function findClosestColor(
-    targetColor: string,
-    availableColors: string[],
-    frequencyMap: Map<string, number>
-): string | null {
-    if (availableColors.length === 0) return null;
-
-    // For now, use simple RGB distance
-    // TODO: Implement Delta E for better color matching
-    const targetRgb = hexToRgb(targetColor);
-    if (!targetRgb) return availableColors[0];
-
-    let closestColor = availableColors[0];
-    let minDistance = Infinity;
-
-    for (const color of availableColors) {
-        const rgb = hexToRgb(color);
-        if (!rgb) continue;
-
-        const distance = Math.sqrt(
-            Math.pow(rgb.r - targetRgb.r, 2) +
-            Math.pow(rgb.g - targetRgb.g, 2) +
-            Math.pow(rgb.b - targetRgb.b, 2)
-        );
-
-        // Weight by frequency
-        const frequency = frequencyMap.get(color) || 1;
-        const weightedDistance = distance / frequency;
-
-        if (weightedDistance < minDistance) {
-            minDistance = weightedDistance;
-            closestColor = color;
-        }
-    }
-
-    return closestColor;
-}
-
-/**
- * Find closest spacing value
- */
-function findClosestSpacing(
-    targetValue: number,
-    availableValues: number[],
-    frequencyMap: Map<number, number>
-): number | null {
-    if (availableValues.length === 0) return null;
-
-    let closestValue = availableValues[0];
-    let minDistance = Infinity;
-
-    for (const value of availableValues) {
-        const distance = Math.abs(value - targetValue);
-
-        // Weight by frequency
-        const frequency = frequencyMap.get(value) || 1;
-        const weightedDistance = distance / frequency;
-
-        if (weightedDistance < minDistance) {
-            minDistance = weightedDistance;
-            closestValue = value;
-        }
-    }
-
-    return closestValue;
-}
-
-/**
- * Convert RGB to hex
+ * Convert RGB to hex (helper for Tier 4)
  */
 function rgbToHex(rgb: RGB): string {
     const r = Math.round(rgb.r * 255);
@@ -747,7 +817,7 @@ function rgbToHex(rgb: RGB): string {
 }
 
 /**
- * Convert hex to RGB
+ * Convert hex to RGB (helper for Tier 4)
  */
 function hexToRgb(hex: string): RGB | null {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
@@ -834,14 +904,18 @@ export async function resolveNode(
     inventory: DesignSystemInventory
 ): Promise<ResolutionResult> {
     const startTime = Date.now();
+    const attemptedTiers: number[] = [];
+    let result: ResolutionResult | null = null;
 
     // Try Tier 1: Exact Match
-    let result = await tryTier1ExactMatch(node, inventory);
+    attemptedTiers.push(1);
+    result = await tryTier1ExactMatch(node, inventory);
     if (result) {
-        return attachMetadata(result, node, startTime);
+        return recordAndReturn(result, node, startTime, attemptedTiers);
     }
 
     // Try Tier 2: Structural Match
+    attemptedTiers.push(2);
     result = await tryTier2StructuralMatch(node, inventory);
     if (result) {
         const metadata: ResolutionResult['metadata'] = {
@@ -850,34 +924,37 @@ export async function resolveNode(
             fallbackReason: FALLBACK_REASONS.tier2.noMatchingRole
         };
         result.metadata = metadata;
-        return attachMetadata(result, node, startTime);
+        return recordAndReturn(result, node, startTime, attemptedTiers);
     }
 
     // Try Tier 3: Variable Construction
+    attemptedTiers.push(3);
     result = await tryTier3VariableConstruction(node, inventory);
     if (result) {
         const metadata: ResolutionResult['metadata'] = {
             nodeId: node.id,
             timeMs: Date.now() - startTime,
-            fallbackReason: FALLBACK_REASONS.tier3
+            fallbackReason: FALLBACK_REASONS.tier3.general
         };
         result.metadata = metadata;
-        return attachMetadata(result, node, startTime);
+        return recordAndReturn(result, node, startTime, attemptedTiers);
     }
 
     // Try Tier 4: Primitive Fallback
+    attemptedTiers.push(4);
     result = await tryTier4PrimitiveFallback(node);
     if (result) {
         const metadata: ResolutionResult['metadata'] = {
             nodeId: node.id,
             timeMs: Date.now() - startTime,
-            fallbackReason: FALLBACK_REASONS.tier4
+            fallbackReason: FALLBACK_REASONS.tier4.general
         };
         result.metadata = metadata;
-        return attachMetadata(result, node, startTime);
+        return recordAndReturn(result, node, startTime, attemptedTiers);
     }
 
     // Tier 5: System Defaults (always succeeds)
+    attemptedTiers.push(5);
     result = tryTier5SystemDefaults(node);
     const metadata: ResolutionResult['metadata'] = {
         nodeId: node.id,
@@ -885,20 +962,42 @@ export async function resolveNode(
         fallbackReason: FALLBACK_REASONS.tier5
     };
     result.metadata = metadata;
-    return attachMetadata(result, node, startTime);
+
+    // ========================================================================
+    // CONFLICT RESOLUTION
+    // ========================================================================
+    // Intervene before returning to apply priority rules (Component > Preset > AI > System)
+    const conflicts = await resolveAllConflicts(node, result, inventory);
+
+    if (conflicts.length > 0) {
+        applyResolutionToInstructions(result.instructions, conflicts);
+
+        // Log conflicts to warnings for visibility
+        result.warnings.push(...conflicts.map(c =>
+            `Conflict: ${c.property} resolved to ${c.winner.source} (${c.winner.formattedValue})`
+        ));
+
+        // Add to metadata (casting to any to avoid strict type error if metadata is rigid)
+        // ideally we extend the type, but runtime this works
+        (result.metadata as any).conflicts = conflicts;
+    }
+
+    return recordAndReturn(result, node, startTime, attemptedTiers);
 }
 
 /**
- * Attach metadata to resolution result
+ * Attach metadata and record statistics
  */
-function attachMetadata(
+function recordAndReturn(
     result: ResolutionResult,
     node: RSNT_Node,
-    startTime: number
+    startTime: number,
+    attemptedTiers: number[]
 ): ResolutionResult {
     const timeMs = Date.now() - startTime;
 
-    return {
+    // Attach standard metadata
+    const finalResult: ResolutionResult = {
         ...result,
         metadata: {
             ...result.metadata,
@@ -906,6 +1005,25 @@ function attachMetadata(
             timeMs,
         },
     };
+
+    // Track detailed resolution log
+    const detailedWarnings = finalResult.warnings.map(w =>
+        resolutionTracker.createCategorizedWarning(w, finalResult.tier, node.id)
+    );
+
+    resolutionTracker.record({
+        nodeId: node.id,
+        tier: finalResult.tier,
+        confidence: finalResult.confidence,
+        method: finalResult.method,
+        timeTaken: timeMs,
+        fallbackReason: finalResult.metadata?.fallbackReason,
+        warnings: detailedWarnings,
+        succeeded: true,
+        attemptedTiers: attemptedTiers as any
+    });
+
+    return finalResult;
 }
 
 // ============================================================================
@@ -916,7 +1034,7 @@ function attachMetadata(
  * Collect and aggregate resolution statistics
  */
 export class ResolutionStatsCollector {
-    private stats: ResolutionStats = {
+    private stats: CollectorStats = {
         tierCounts: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
         averageConfidence: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
         totalNodes: 0,
@@ -944,7 +1062,7 @@ export class ResolutionStatsCollector {
     /**
      * Get final statistics report
      */
-    getStats(): ResolutionStats {
+    getStats(): CollectorStats {
         // Calculate average confidence for each tier
         for (const tier of [1, 2, 3, 4, 5] as const) {
             const count = this.stats.tierCounts[tier];

@@ -118,6 +118,21 @@ export function hexToRGB(hex: string): RGB {
 }
 
 /**
+ * Convert RGB to Hex string
+ * Assumes r, g, b are in range [0, 1]
+ */
+export function rgbToHex({ r, g, b }: RGB): string {
+    const toHex = (val: number): string => {
+        const clamped = Math.max(0, Math.min(1, val));
+        const int = Math.round(clamped * 255);
+        return int.toString(16).padStart(2, '0');
+    };
+
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+}
+
+
+/**
  * Handle different color input formats (hex or object) and return Figma RGB
  * Normalizes colors from various sources to the standard 0-1 range
  */

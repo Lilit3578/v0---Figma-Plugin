@@ -4,7 +4,7 @@ import { createAIError, ErrorCode } from '../types/errors';
 import { AIClassificationResponse, ClassificationBatchResult } from '../types/classification';
 import { globalRateLimiter } from '../libs/rate-limiter';
 
-const MODEL_NAME = 'gemini-2.0-flash';
+const MODEL_NAME = 'gemini-2.5-flash';
 const BATCH_SIZE = 10;
 
 /**
@@ -149,49 +149,63 @@ ${JSON.stringify(components.map(c => ({
     }
 
     private async callAI(prompt: string): Promise<any> {
-        return globalRateLimiter.executeWithRetry(async () => {
-            const response = await fetch(
-                `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${this.apiKey}`,
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        contents: [{
-                            parts: [{ text: prompt }]
-                        }],
-                        generationConfig: {
-                            temperature: 0.2,
-                            responseMimeType: "application/json"
-                        }
-                    })
+        let response;
+        try {
+            response = await globalRateLimiter.executeWithRetry(async () => {
+                const res = await fetch(
+                    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${this.apiKey}`,
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            contents: [{
+                                parts: [{ text: prompt }]
+                            }],
+                            generationConfig: {
+                                temperature: 0.2,
+                                responseMimeType: "application/json"
+                            }
+                        })
+                    }
+                );
+
+                // Force retry on 429 (Rate Limit) or 5xx (Server Error)
+                if (res.status === 429 || res.status >= 500) {
+                    const text = await res.text();
+                    throw new Error(`AI_API_RETRY: ${res.status} ${text}`);
                 }
-            );
 
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`AI API Failed: ${response.status} ${text}`);
+                return res;
+            });
+        } catch (error: any) {
+            console.error('Classification AI call failed:', error);
+            throw error;
+        }
+
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`AI API Failed: ${response.status} ${text}`);
+        }
+
+        const data = await response.json();
+        const candidate = data.candidates?.[0];
+
+        if (!candidate?.content?.parts?.[0]?.text) {
+            throw new Error('Empty AI response');
+        }
+
+        const textResponse = candidate.content.parts[0].text;
+
+        try {
+            return JSON.parse(textResponse);
+        } catch (e) {
+            // Fallback for rare cases where markdown fences might still appear
+            const jsonMatch = textResponse.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[0]);
             }
-
-            const data = await response.json();
-            const candidate = data.candidates?.[0];
-
-            if (!candidate?.content?.parts?.[0]?.text) {
-                throw new Error('Empty AI response');
-            }
-
-            const textResponse = candidate.content.parts[0].text;
-
-            try {
-                return JSON.parse(textResponse);
-            } catch (e) {
-                // Fallback for rare cases where markdown fences might still appear
-                const jsonMatch = textResponse.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    return JSON.parse(jsonMatch[0]);
-                }
-                throw e;
-            }
-        });
+            throw e;
+        }
     }
 
     /**

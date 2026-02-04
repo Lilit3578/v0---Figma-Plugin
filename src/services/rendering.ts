@@ -3,7 +3,7 @@ import { normalizeColor } from '../libs/color-utils';
 import { RenderResult, RenderError, createRenderErrorUI, createExecutionError, createResolutionError, ErrorCode } from '../types/errors';
 import { fontManager } from './font-manager';
 import { processInChunks } from '../utils/chunking';
-import { ResolutionResult, ExecutionInstructions, ComponentInstructions, FrameInstructions } from './resolution';
+import { ResolutionResult, ExecutionInstructions, ComponentInstructions, FrameInstructions } from '../types/resolution-types';
 
 /**
  * Render RSNT node to Figma

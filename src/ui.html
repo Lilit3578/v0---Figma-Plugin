@@ -10,6 +10,9 @@
 <body>
     <div class="container">
         <h1>Semantic Design Compiler</h1>
+        <div id="iteration-info"
+            style="font-size: 11px; color: var(--figma-color-text-secondary); margin-bottom: 8px; display: none;">
+            Iteration 1 of 5</div>
 
         <div class="input-group">
             <input type="text" id="intent-input" placeholder="Describe what you want to create..." />
@@ -19,7 +22,8 @@
         <div class="history-controls">
             <button id="undo-btn" class="history-btn" disabled>← Undo</button>
             <button id="redo-btn" class="history-btn" disabled>Redo →</button>
-            <button id="clear-conv-btn" class="history-btn">Clear Conversation</button>
+            <button id="undo-change-btn" class="history-btn" style="display: none;">Revert Change</button>
+            <button id="clear-conv-btn" class="history-btn">Start Fresh</button>
         </div>
 
         <div id="cooldown-timer" style="display: none;"></div>
@@ -57,6 +61,117 @@
     </div>
 
     <script src="ui.js"></script>
+
+    <!-- Summary Dialog -->
+    <div id="summary-dialog" class="dialog-overlay" style="display: none;">
+        <div class="dialog">
+            <div class="dialog-header">
+                <h3>Generation Complete</h3>
+                <button id="close-summary-btn" class="icon-btn">✕</button>
+            </div>
+            <div class="dialog-content">
+                <div class="quality-badge" id="quality-badge">Good</div>
+
+                <div class="summary-section">
+                    <h4>Resolution Summary</h4>
+                    <div id="tier-breakdown">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <div class="summary-section">
+                    <h4>Warnings (<span id="total-warnings-count">0</span>)</h4>
+                    <ul id="warnings-list" class="warnings-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+
+                <div class="summary-section">
+                    <h4>Recommendations</h4>
+                    <ul id="recommendations-list" class="recommendations-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+            </div>
+            <div class="dialog-footer">
+                <button id="view-details-btn" class="secondary">View Details</button>
+                <button id="dismiss-summary-btn" class="primary">Dismiss</button>
+            </div>
+        </div>
+    </div>
+    <!-- Approval Dialog -->
+    <div id="approval-dialog" class="dialog-overlay" style="display: none;">
+        <div class="dialog">
+            <div class="dialog-header">
+                <h3>Review Generated Design</h3>
+            </div>
+            <div class="dialog-content">
+                <div class="confidence-section">
+                    <div class="confidence-label">
+                        <span>Confidence Score</span>
+                        <span id="approval-confidence-score">0%</span>
+                    </div>
+                    <div class="confidence-bar-bg">
+                        <div id="approval-confidence-fill" class="confidence-bar-fill"></div>
+                    </div>
+                </div>
+
+                <div class="summary-section">
+                    <h4>Why did I do this?</h4>
+                    <p id="approval-reasoning" class="text-sm text-secondary"></p>
+                </div>
+
+                <div class="summary-section">
+                    <h4>Key Decisions</h4>
+                    <ul id="approval-decisions" class="info-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+            </div>
+            <div class="dialog-footer">
+                <button id="reject-design-btn" class="secondary destructive">Start Over</button>
+                <button id="approve-design-btn" class="primary">Looks Good</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Clarification Dialog -->
+    <div id="clarification-dialog" class="dialog-overlay" style="display: none;">
+        <div class="dialog">
+            <div class="dialog-header">
+                <h3>I need more information</h3>
+            </div>
+            <div class="dialog-content">
+                <div class="confidence-note warning-bg">
+                    <span class="icon">⚠️</span>
+                    <span>Confidence is too low to generate (<span id="clarification-score">0%</span>)</span>
+                </div>
+
+                <div class="summary-section">
+                    <div id="clarification-questions">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+
+                <p class="help-text">Please refine your request with more details.</p>
+            </div>
+            <div class="dialog-footer">
+                <button id="close-clarification-btn" class="primary">I'll Try Again</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Undo Toast -->
+    <div id="undo-toast" class="undo-toast" style="display: none;">
+        <span class="undo-message">✓ Generated successfully</span>
+        <div class="undo-actions">
+            <button id="toast-undo-btn" class="text-btn">Undo</button>
+            <button id="toast-close-btn" class="icon-btn">✕</button>
+        </div>
+        <div class="undo-timer-bar">
+            <div id="undo-timer-fill" class="undo-timer-fill"></div>
+        </div>
+    </div>
 </body>
 
 </html>

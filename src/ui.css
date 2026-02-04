@@ -321,3 +321,276 @@ summary {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Dialog Overlay */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog {
+  background: var(--figma-color-bg);
+  width: 380px;
+  max-height: 85vh;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--figma-color-border);
+}
+
+.dialog-header {
+  padding: 12px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--figma-color-border);
+}
+
+.dialog-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dialog-content {
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.dialog-footer {
+  padding: 12px 16px;
+  border-top: 1px solid var(--figma-color-border);
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Quality Badge */
+.quality-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+
+.quality-badge.excellent {
+  background: #E6F4EA;
+  color: #137333;
+}
+
+.quality-badge.good {
+  background: #E8F0FE;
+  color: #1967D2;
+}
+
+.quality-badge.fair {
+  background: #FEF7E0;
+  color: #B06000;
+}
+
+.quality-badge.poor {
+  background: #FCE8E6;
+  color: #C5221F;
+}
+
+/* Sections */
+.summary-section {
+  margin-bottom: 16px;
+}
+
+.summary-section h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--figma-color-text-secondary);
+  margin: 0 0 8px 0;
+}
+
+/* Tier Items */
+.tier-item {
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.tier-item.success {
+  color: var(--figma-color-text-success);
+}
+
+.tier-item.warning {
+  color: var(--figma-color-text-warning);
+}
+
+.tier-item.crit {
+  color: var(--figma-color-text-danger);
+}
+
+/* Lists */
+.warnings-list,
+.recommendations-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+/* Approval Dialog Styles */
+.confidence-section {
+  margin-bottom: 20px;
+  padding: 12px;
+  background: var(--figma-color-bg-secondary);
+  border-radius: 6px;
+}
+
+.confidence-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.confidence-bar-bg {
+  height: 8px;
+  background: white;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+
+.confidence-bar-fill {
+  height: 100%;
+  background: var(--success);
+  width: 0%;
+  transition: width 0.5s ease;
+}
+
+.info-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.info-list li {
+  font-size: 11px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--border);
+}
+
+.info-list li:last-child {
+  border-bottom: none;
+}
+
+/* Clarification Dialog Styles */
+.confidence-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 6px;
+  margin-bottom: 16px;
+  font-weight: 500;
+}
+
+.warning-bg {
+  background: #FFFAF0;
+  /* warm yellow/orange tint */
+  border: 1px solid #FFE8CC;
+  color: #995A00;
+}
+
+.icon {
+  font-size: 16px;
+}
+
+/* Button variants */
+.destructive {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: white;
+}
+
+.destructive:hover {
+  background: #FFF5F5;
+}
+
+.text-btn {
+  background: none;
+  border: none;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.icon-btn {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  opacity: 0.7;
+  font-size: 14px;
+  padding: 4px;
+}
+
+.icon-btn:hover {
+  opacity: 1;
+}
+
+/* Undo Toast */
+.undo-toast {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #333;
+  color: white;
+  padding: 12px 16px;
+  border-radius: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 2000;
+  min-width: 300px;
+  overflow: hidden;
+  /* For timer bar */
+}
+
+.undo-message {
+  font-weight: 500;
+}
+
+.undo-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.undo-timer-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.undo-timer-fill {
+  height: 100%;
+  background: var(--primary);
+  width: 100%;
+  /* Transition handled in JS */
+}
