@@ -534,7 +534,8 @@ figma.ui.onmessage = async (msg) => {
           percentage
         });
       },
-      () => cancellationRequested
+      () => cancellationRequested,
+      currentInventory || undefined
     );
 
     const duration = Date.now() - startTime;
@@ -782,7 +783,7 @@ figma.ui.onmessage = async (msg) => {
       const entry = historyManager.undo();
       if (entry) {
         // Re-render previous design
-        const result = await renderRSNT(entry.rsnt);
+        const result = await renderRSNT(entry.rsnt, undefined, undefined, undefined, currentInventory || undefined);
         const rootNode = result.node;
 
         // Position on canvas

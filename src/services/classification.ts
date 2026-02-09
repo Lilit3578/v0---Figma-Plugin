@@ -102,18 +102,23 @@ export class ClassificationService {
             batches.push(components.slice(i, i + BATCH_SIZE));
         }
 
+        const CONCURRENCY_LIMIT = 3; // Stay safe with Gemini rate limits
         let processed = 0;
 
-        for (const batch of batches) {
-            const batchResults = await this.classifyBatch(batch);
+        for (let i = 0; i < batches.length; i += CONCURRENCY_LIMIT) {
+            const currentBatches = batches.slice(i, i + CONCURRENCY_LIMIT);
 
-            batchResults.forEach(res => {
+            const chunkResults = await Promise.all(currentBatches.map(batch =>
+                this.classifyBatch(batch)
+            ));
+
+            chunkResults.flat().forEach(res => {
                 if (res.result) {
                     results.set(res.componentId, res.result);
                 }
             });
 
-            processed += batch.length;
+            processed += currentBatches.reduce((acc, b) => acc + b.length, 0);
             if (onProgress) {
                 onProgress(processed / components.length);
             }
@@ -136,19 +141,31 @@ Return a JSON array where each object contains:
 - "reasoning": Brief explanation
 
 Components to analyze:
-// Include keys of properties and variants to help AI decide role
-${JSON.stringify(components.map(c => ({
-            componentId: c.id,
-            name: c.name,
-            description: c.description || '',
-            variantProperties: c.variantProperties, // Pass the full object { prop: { values: [] } }
-            properties: c.properties ? Object.keys(c.properties) : [],
-            structure: c.anatomy?.structureSignature,
-            dimensions: c.anatomy?.dimensionInfo,
-            layout: c.anatomy?.layoutInfo,
-            hasIcon: c.anatomy?.hasIcon,
-            hasLabel: c.anatomy?.hasLabel
-        })), null, 2)}
+// Include keys of properties and variants to help AI decide        ${JSON.stringify(components.map(c => {
+            // Prune variant properties to essential info
+            const prunedVariants: Record<string, string[]> = {};
+            if (c.variantProperties) {
+                Object.entries(c.variantProperties).forEach(([k, v]) => {
+                    // Only send up to 5 values per variant to save tokens
+                    prunedVariants[k] = v.values.slice(0, 5);
+                });
+            }
+
+            return {
+                componentId: c.id,
+                name: c.name,
+                description: c.description ? c.description.slice(0, 100) : '', // Prune long descriptions
+                variantProperties: prunedVariants,
+                properties: c.properties ? Object.keys(c.properties).slice(0, 10) : [], // Only first 10 props
+                structure: c.anatomy?.structureSignature,
+                dimensions: c.anatomy ? {
+                    w: Math.round(c.anatomy.dimensionInfo.width),
+                    h: Math.round(c.anatomy.dimensionInfo.height)
+                } : undefined,
+                hasIcon: c.anatomy?.hasIcon,
+                hasLabel: c.anatomy?.hasLabel
+            };
+        }), null, 2)}
 `;
     }
 

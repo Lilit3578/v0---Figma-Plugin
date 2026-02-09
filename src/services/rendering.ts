@@ -5,6 +5,7 @@ import { fontManager } from './font-manager';
 import { processInChunks } from '../utils/chunking';
 import { ResolutionResult, ExecutionInstructions, ComponentInstructions, FrameInstructions } from '../types/resolution-types';
 import { propertyMappingService } from './property-mapping';
+import { DesignSystemInventory } from './auto-discovery';
 
 /**
  * Render RSNT node to Figma
@@ -14,7 +15,8 @@ export async function renderRSNT(
     node: RSNT_Node,
     parent?: BaseNode & ChildrenMixin,
     onProgress?: (progress: { current: number, total: number }) => void,
-    shouldCancel?: () => boolean
+    shouldCancel?: () => boolean,
+    inventory?: DesignSystemInventory
 ): Promise<RenderResult> {
     const errors: RenderError[] = [];
     const warnings: RenderError[] = [];
@@ -33,7 +35,7 @@ export async function renderRSNT(
             // Note: If resolution is provided, use executeInstructions instead
             switch (rsnt.type) {
                 case 'COMPONENT_INSTANCE':
-                    figmaNode = await renderComponentInstance(rsnt);
+                    figmaNode = await renderComponentInstance(rsnt, undefined, inventory);
                     break;
                 case 'FRAME':
                     figmaNode = await renderFrame(rsnt);
@@ -47,7 +49,7 @@ export async function renderRSNT(
                     // intent is clear — route to component rendering regardless of type string.
                     if (rsnt.componentId) {
                         console.warn(`Node "${rsnt.id}" has unrecognised type "${rsnt.type}" but componentId is set — treating as COMPONENT_INSTANCE`);
-                        figmaNode = await renderComponentInstance(rsnt);
+                        figmaNode = await renderComponentInstance(rsnt, undefined, inventory);
                         break;
                     }
                     throw createExecutionError(ErrorCode.NODE_CREATION_FAILED, { type: rsnt.type }, `Unknown node type: ${rsnt.type}`);
@@ -131,7 +133,11 @@ function flattenRSNT(root: RSNT_Node): FlatNode[] {
     return result;
 }
 
-async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentInstructions['overrides']): Promise<InstanceNode> {
+async function renderComponentInstance(
+    node: RSNT_Node,
+    overrides?: ComponentInstructions['overrides'],
+    inventory?: DesignSystemInventory
+): Promise<InstanceNode> {
     let component: ComponentNode | ComponentSetNode | null = null;
 
     if (node.componentId) {
@@ -157,39 +163,58 @@ async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentIns
         if (!component && node.name) {
             console.warn(`Component ID "${node.componentId}" not found. Attempting fallback search by name: "${node.name}"`);
 
-            // Exact Name Match
-            let candidates = figma.root.findAll(n => (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') && n.name === node.name);
-
-            // Case-Insensitive Match
-            if (candidates.length === 0) {
+            // Use Inventory lookup if available (FAST - No document traversal)
+            if (inventory) {
                 const lowerName = node.name.toLowerCase();
-                candidates = figma.root.findAll(n => (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') && n.name.toLowerCase() === lowerName);
-            }
+                const matched = inventory.components.find(c =>
+                    c.name.toLowerCase() === lowerName ||
+                    c.name.split('/').pop()?.trim().toLowerCase() === lowerName
+                );
 
-            // Cleaned Partial Match
-            if (candidates.length === 0) {
-                const cleanName = node.name.split('/').pop()?.trim().toLowerCase();
-                if (cleanName) {
-                    candidates = figma.root.findAll(n => {
-                        if (n.type !== 'COMPONENT' && n.type !== 'COMPONENT_SET') return false;
-                        const nName = n.name.toLowerCase();
-                        return nName === cleanName || nName.endsWith(`/${cleanName}`) || nName.includes(cleanName);
-                    });
+                if (matched) {
+                    component = figma.getNodeById(matched.id) as ComponentNode | ComponentSetNode;
+                    if (component) {
+                        console.log(`Recovered component "${node.name}" (ID: ${component.id}) via Inventory lookup.`);
+                        node.componentId = component.id;
+                    }
                 }
             }
 
-            if (candidates.length > 0) {
-                candidates.sort((a, b) => a.name.length - b.name.length);
-                component = candidates[0] as ComponentNode | ComponentSetNode;
-                console.log(`Recovered component "${node.name}" (ID: ${component.id}) via name fallback.`);
+            // Document-wide fallback (SLOW - Only if inventory lookup failed or inventory missing)
+            if (!component) {
+                // Exact Name Match
+                let candidates = figma.root.findAll(n => (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') && n.name === node.name);
 
-                // Constructive update: if we found it by name/key, update the node ID so subsequent steps work
-                if (node.componentId !== component.id) {
-                    // We can't mutate readonly props easily if frozen, but RSNT is usually a POJO
-                    node.componentId = component.id;
+                // Case-Insensitive Match
+                if (candidates.length === 0) {
+                    const lowerName = node.name.toLowerCase();
+                    candidates = figma.root.findAll(n => (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') && n.name.toLowerCase() === lowerName);
                 }
-            } else {
-                console.warn(`Fallback search failed for "${node.name}".`);
+
+                // Cleaned Partial Match
+                if (candidates.length === 0) {
+                    const cleanName = node.name.split('/').pop()?.trim().toLowerCase();
+                    if (cleanName) {
+                        candidates = figma.root.findAll(n => {
+                            if (n.type !== 'COMPONENT' && n.type !== 'COMPONENT_SET') return false;
+                            const nName = n.name.toLowerCase();
+                            return nName === cleanName || nName.endsWith(`/${cleanName}`) || nName.includes(cleanName);
+                        });
+                    }
+                }
+
+                if (candidates.length > 0) {
+                    candidates.sort((a, b) => a.name.length - b.name.length);
+                    component = candidates[0] as ComponentNode | ComponentSetNode;
+                    console.log(`Recovered component "${node.name}" (ID: ${component.id}) via name fallback.`);
+
+                    // Constructive update: if we found it by name/key, update the node ID so subsequent steps work
+                    if (node.componentId !== component.id) {
+                        node.componentId = component.id;
+                    }
+                } else {
+                    console.warn(`Fallback search failed for "${node.name}".`);
+                }
             }
         }
     }

@@ -342,8 +342,12 @@ export class PropertyMappingService {
             result.warnings.push(`Low mappability: ${(mappablePercentage * 100).toFixed(0)}% (threshold: 70%)`);
         }
 
-        // Build semantic lookup
-        const semanticLookup = this.buildSemanticLookup(mappings);
+        // Build or retrieve memoized semantic lookup
+        let semanticLookup = this.semanticLookupCache.get(componentId);
+        if (!semanticLookup) {
+            semanticLookup = this.buildSemanticLookup(mappings);
+            this.semanticLookupCache.set(componentId, semanticLookup);
+        }
 
         // Apply mappings
         for (const [rsntProp, rsntValue] of Object.entries(rsntProps)) {
