@@ -16,6 +16,9 @@
 
         <div class="input-group">
             <input type="text" id="intent-input" placeholder="Describe what you want to create..." />
+            <div id="char-counter"
+                style="position: absolute; right: 90px; top: 10px; font-size: 10px; color: var(--figma-color-text-tertiary); pointer-events: none;">
+                0 / 500</div>
             <button id="generate-btn">Generate</button>
         </div>
 
@@ -60,7 +63,7 @@
         </details>
     </div>
 
-    <script src="ui.js"></script>
+
 
     <!-- Summary Dialog -->
     <div id="summary-dialog" class="dialog-overlay" style="display: none;">
@@ -161,6 +164,62 @@
         </div>
     </div>
 
+    <!-- Antigravity Reasoning Dialog -->
+    <div id="antigravity-dialog" class="dialog-overlay" style="display: none;">
+        <div class="dialog" style="max-width: 520px;">
+            <div class="dialog-header">
+                <h3>Antigravity Reasoning</h3>
+                <button id="close-antigravity-btn" class="icon-btn">✕</button>
+            </div>
+            <div class="dialog-content">
+                <div class="summary-section">
+                    <h4>Intent Understanding</h4>
+                    <p id="antigravity-intent" class="text-sm"></p>
+                </div>
+
+                <div class="summary-section">
+                    <h4>Component Selections</h4>
+                    <ul id="antigravity-components" class="info-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+
+                <div class="summary-section">
+                    <h4>Layout Rationale</h4>
+                    <p id="antigravity-layout" class="text-sm text-secondary"></p>
+                </div>
+
+                <div class="summary-section" id="antigravity-warnings-section" style="display: none;">
+                    <h4>Warnings</h4>
+                    <ul id="antigravity-warnings" class="warnings-list">
+                        <!-- Populated by JS -->
+                    </ul>
+                </div>
+
+                <div class="confidence-section" style="margin-top: 16px;">
+                    <div class="confidence-label">
+                        <span>Overall Confidence</span>
+                        <span id="antigravity-confidence">0%</span>
+                    </div>
+                    <div class="confidence-bar-bg">
+                        <div id="antigravity-confidence-fill" class="confidence-bar-fill"></div>
+                    </div>
+                </div>
+
+                <div class="timing-info"
+                    style="margin-top: 12px; font-size: 11px; color: var(--figma-color-text-tertiary);">
+                    <span>Intent: <span id="timing-intent">0</span>ms</span> |
+                    <span>Decision: <span id="timing-decision">0</span>ms</span> |
+                    <span>Build: <span id="timing-build">0</span>ms</span> |
+                    <span>Total: <span id="timing-total">0</span>ms</span>
+                </div>
+            </div>
+            <div class="dialog-footer">
+                <button id="dismiss-antigravity-btn" class="primary">Got it</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Undo Toast -->
     <div id="undo-toast" class="undo-toast" style="display: none;">
         <span class="undo-message">✓ Generated successfully</span>
@@ -172,6 +231,7 @@
             <div id="undo-timer-fill" class="undo-timer-fill"></div>
         </div>
     </div>
+    <script src="ui.js"></script>
 </body>
 
 </html>

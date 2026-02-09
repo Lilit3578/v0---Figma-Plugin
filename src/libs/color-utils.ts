@@ -134,15 +134,17 @@ export function rgbToHex({ r, g, b }: RGB): string {
 
 /**
  * Handle different color input formats (hex or object) and return Figma RGB
- * Normalizes colors from various sources to the standard 0-1 range
+ * Normalizes colors from various sources to the standard 0-1 range.
+ * Detects if values are in 0-255 range (> 1) and converts them.
  */
-export function normalizeColor(color: any): { r: number; g: number; b: number } {
+export function normalizeColor(color: string | { r?: number; g?: number; b?: number } | null | undefined): { r: number; g: number; b: number } {
     if (typeof color === 'string') {
         return hexToRGB(color);
     }
 
     if (typeof color === 'object' && color !== null) {
         // Check if r, g, b exist and are numbers
+        // If value > 1, assume it's in 0-255 range and convert
         const r = typeof color.r === 'number' ? (color.r > 1 ? color.r / 255 : color.r) : 0;
         const g = typeof color.g === 'number' ? (color.g > 1 ? color.g / 255 : color.g) : 0;
         const b = typeof color.b === 'number' ? (color.b > 1 ? color.b / 255 : color.b) : 0;

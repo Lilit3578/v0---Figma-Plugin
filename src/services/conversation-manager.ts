@@ -37,7 +37,7 @@ export class ConversationManager {
      * Generate unique ID
      */
     private generateId(): string {
-        return `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
     }
 
     /**
@@ -64,6 +64,12 @@ export class ConversationManager {
 
         // Parse intent type
         const intentType = this.parseIterationIntent(userIntent);
+
+        // Enforce turn limit — drop oldest turn if at capacity
+        if (this.currentConversation!.turns.length >= this.MAX_TURNS) {
+            this.currentConversation!.turns.shift();
+            console.log('Conversation: Dropped oldest turn (MAX_TURNS reached)');
+        }
 
         this.currentConversation!.turns.push({
             id: this.generateId(),
@@ -162,8 +168,9 @@ export class ConversationManager {
         const lastTurn = this.currentConversation.turns[this.currentConversation.turns.length - 1];
         const intentType = this.parseIterationIntent(currentIntent);
 
-        // If it's a new design request, ignore history
+        // If it's a new design request, clear history and start fresh
         if (intentType === 'NEW_DESIGN') {
+            this.clearConversation();
             return '';
         }
 
@@ -200,8 +207,8 @@ ${this.getModificationInstructions(intentType)}
             case 'SPACING_CHANGE':
                 return `
 - MODIFY the provided RSNT JSON to adjust spacing (padding, gaps).
-- "Compact": Reduce values (e.g., p-8 -> p-6, gap-4 -> gap-2).
-- "Spacious": Increase values (e.g., p-4 -> p-6).
+- "Compact": Reduce pixel values (e.g., padding: 32px → 24px, gap: 16px → 8px).
+- "Spacious": Increase pixel values (e.g., padding: 16px → 24px, gap: 8px → 16px).
 - Preserve the overall structure and component IDs.
 `;
             case 'ELEMENT_ADD':

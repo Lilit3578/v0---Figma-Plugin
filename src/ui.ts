@@ -1,4 +1,3 @@
-import { generateRSNT } from './services/ai-service';
 import { conversationManager } from './services/conversation-manager';
 import { DesignSystemInventory } from './services/auto-discovery';
 import { RateLimiter } from './libs/rate-limiter';
@@ -20,14 +19,30 @@ const undoChangeBtn = document.getElementById('undo-change-btn') as HTMLButtonEl
 const forceRefreshBtn = document.getElementById('force-refresh-btn') as HTMLButtonElement;
 const cacheStats = document.getElementById('cache-stats') as HTMLDivElement;
 
+// Antigravity dialog elements
+const antigravityDialog = document.getElementById('antigravity-dialog') as HTMLDivElement;
+const closeAntigravityBtn = document.getElementById('close-antigravity-btn') as HTMLButtonElement;
+const dismissAntigravityBtn = document.getElementById('dismiss-antigravity-btn') as HTMLButtonElement;
+
 let currentInventory: DesignSystemInventory | null = null;
 const rateLimiter = new RateLimiter(2000); // 2 second minimum interval
 
+function escapeHtml(str: string): string {
+    return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 // Character counter
-intentInput.addEventListener('input', () => {
-    const length = intentInput.value.length;
-    charCounter.textContent = `${length} / 500 characters`;
-});
+if (intentInput && charCounter) {
+    intentInput.addEventListener('input', () => {
+        const length = intentInput.value.length;
+        charCounter.textContent = `${length} / 500 characters`;
+    });
+}
 
 // Request API key on load
 parent.postMessage({ pluginMessage: { type: 'get-api-key' } }, '*');
@@ -36,12 +51,19 @@ parent.postMessage({ pluginMessage: { type: 'get-api-key' } }, '*');
 parent.postMessage({ pluginMessage: { type: 'get-inventory' } }, '*');
 
 // Save API key
-saveKeyBtn.onclick = () => {
-    const key = apiKeyInput.value.trim();
-    if (key) {
-        parent.postMessage({ pluginMessage: { type: 'set-api-key', key } }, '*');
-    }
-};
+if (saveKeyBtn && apiKeyInput) {
+    saveKeyBtn.onclick = () => {
+        let key = apiKeyInput.value.trim();
+        // Remove leading '#' if present
+        key = key.replace(/^#/, '');
+
+        if (key) {
+            parent.postMessage({ pluginMessage: { type: 'set-api-key', key } }, '*');
+        } else {
+            showStatus('error', 'Please enter a valid API key');
+        }
+    };
+}
 
 function showResolutionSummary(summary: ResolutionSummary) {
     const dialog = document.getElementById('summary-dialog');
@@ -59,11 +81,11 @@ function showResolutionSummary(summary: ResolutionSummary) {
     if (tierDiv) {
         let html = '';
         const tiers = summary.stats.tierCounts;
-        if (tiers[1] > 0) html += `<div class="tier-item success">✓ ${tiers[1]} nodes used library components (Tier 1)</div>`;
-        if (tiers[2] > 0) html += `<div class="tier-item success">✓ ${tiers[2]} nodes used base components (Tier 2)</div>`;
-        if (tiers[3] > 0) html += `<div class="tier-item warning">⚠ ${tiers[3]} nodes built with variables (Tier 3)</div>`;
-        if (tiers[4] > 0) html += `<div class="tier-item warning">⚠ ${tiers[4]} nodes used approximations (Tier 4)</div>`;
-        if (tiers[5] > 0) html += `<div class="tier-item crit">❌ ${tiers[5]} nodes used system defaults (Tier 5)</div>`;
+        if (tiers[1] > 0) html += `<div class="tier-item success">✓ ${escapeHtml(String(tiers[1]))} nodes used library components (Tier 1)</div>`;
+        if (tiers[2] > 0) html += `<div class="tier-item success">✓ ${escapeHtml(String(tiers[2]))} nodes used base components (Tier 2)</div>`;
+        if (tiers[3] > 0) html += `<div class="tier-item warning">⚠ ${escapeHtml(String(tiers[3]))} nodes built with variables (Tier 3)</div>`;
+        if (tiers[4] > 0) html += `<div class="tier-item warning">⚠ ${escapeHtml(String(tiers[4]))} nodes used approximations (Tier 4)</div>`;
+        if (tiers[5] > 0) html += `<div class="tier-item crit">❌ ${escapeHtml(String(tiers[5]))} nodes used system defaults (Tier 5)</div>`;
         tierDiv.innerHTML = html;
     }
 
@@ -75,7 +97,7 @@ function showResolutionSummary(summary: ResolutionSummary) {
     if (warnList) {
         // Use categorized warnings
         const items = summary.warnings.categorized.map(c =>
-            `<li class="warning-li"><b>${c.count}</b> ${c.category.toLowerCase().replace('_', ' ')} issues</li>`
+            `<li class="warning-li"><b>${escapeHtml(String(c.count))}</b> ${escapeHtml(c.category.toLowerCase().replace('_', ' '))} issues</li>`
         ).join('');
         warnList.innerHTML = items || '<li class="success">No warnings</li>';
     }
@@ -83,19 +105,33 @@ function showResolutionSummary(summary: ResolutionSummary) {
     // Recommendations
     const recList = document.getElementById('recommendations-list');
     if (recList) {
-        const items = summary.recommendations.map(r => `<li>• ${r}</li>`).join('');
+        const items = summary.recommendations.map(r => `<li>• ${escapeHtml(r)}</li>`).join('');
         recList.innerHTML = items || '<li>No specific recommendations.</li>';
     }
 
     dialog.style.display = 'flex';
 
-    // Button Listeners
-    document.getElementById('close-summary-btn')!.onclick = () => dialog.style.display = 'none';
-    document.getElementById('dismiss-summary-btn')!.onclick = () => dialog.style.display = 'none';
-    document.getElementById('view-details-btn')!.onclick = () => {
-        // Could expand or show another view
-        alert('Detailed report view not implemented yet.');
-    };
+    // Button Listeners - with null checks
+    const closeSummaryBtn = document.getElementById('close-summary-btn');
+    const dismissSummaryBtn = document.getElementById('dismiss-summary-btn');
+    const viewDetailsBtn = document.getElementById('view-details-btn');
+
+    if (closeSummaryBtn) {
+        closeSummaryBtn.onclick = () => dialog.style.display = 'none';
+    }
+    if (dismissSummaryBtn) {
+        dismissSummaryBtn.onclick = () => dialog.style.display = 'none';
+    }
+    if (viewDetailsBtn) {
+        viewDetailsBtn.onclick = () => {
+            // Show detailed breakdown in a scrollable area
+            const detailsSection = document.getElementById('summary-details-expanded');
+            if (detailsSection) {
+                detailsSection.style.display = detailsSection.style.display === 'none' ? 'block' : 'none';
+                viewDetailsBtn.textContent = detailsSection.style.display === 'none' ? 'View Details' : 'Hide Details';
+            }
+        };
+    }
 }
 
 // Add after saveKeyBtn.onclick
@@ -180,77 +216,88 @@ function updateIterationInfo() {
 }
 
 // Generate button with rate limiting
-generateBtn.onclick = async () => {
-    const intent = intentInput.value.trim();
-    const apiKey = apiKeyInput.value.trim();
+if (generateBtn) {
+    generateBtn.onclick = async () => {
+        const intent = intentInput.value.trim();
+        const apiKey = apiKeyInput.value.trim();
 
-    if (!intent) {
-        showStatus('error', 'Please enter a description');
-        return;
-    }
-
-    if (!apiKey) {
-        showStatus('error', 'Please enter your Gemini API key');
-        const settingsDetails = document.querySelector('details');
-        if (settingsDetails) settingsDetails.open = true;
-        return;
-    }
-
-    if (!currentInventory) {
-        showStatus('error', 'Design system not ready. Please wait for discovery to complete.');
-        return;
-    }
-
-    console.log('Current inventory:', {
-        components: currentInventory.components.length,
-        variables: currentInventory.variables.length
-    });
-
-    // Apply rate limiting
-    await rateLimiter.throttle(async () => {
-        showStatus('loading', `Generating with AI (${currentInventory!.components.length} components, ${currentInventory!.variables.length} variables)...`);
-        generateBtn.disabled = true;
-
-        try {
-            // Generate RSNT using AI with FULL inventory
-            const result = await generateRSNT(intent, apiKey, currentInventory!);
-
-            // Check if it's a clarification request
-            if ('questions' in result) {
-                console.log('Received clarification request:', result);
-                showClarificationDialog(result);
-                return;
-            }
-
-            // Normal flow
-            const rsnt = result as any; // Cast back to RSNT_Node
-            console.log('Generated RSNT:', rsnt);
-
-            // Update iteration info (since ai-service added the turn)
-            updateIterationInfo();
-
-            showStatus('loading', 'Creating design in Figma...');
-
-            // Send to plugin for rendering
-            parent.postMessage({
-                pluginMessage: {
-                    type: 'generate',
-                    intent,
-                    rsnt
-                }
-            }, '*');
-
-        } catch (error: any) {
-            console.error('Generation error:', error);
-            const userError = formatError(error);
-            showStructuredError(userError);
-            generateBtn.disabled = false;
+        if (!intent) {
+            showStatus('error', 'Please enter a description');
+            return;
         }
-    });
 
-    // Start cooldown timer
-    startCooldownTimer();
-};
+        if (!apiKey) {
+            showStatus('error', 'Please enter your Gemini API key');
+            const settingsDetails = document.querySelector('details');
+            if (settingsDetails) settingsDetails.open = true;
+            return;
+        }
+
+        if (!currentInventory) {
+            showStatus('error', 'Design system not ready. Please wait for discovery to complete.');
+            return;
+        }
+
+        console.log('Current inventory:', {
+            components: currentInventory.components.length,
+            variables: currentInventory.variables.length
+        });
+
+        // Apply rate limiting
+        await rateLimiter.throttle(async () => {
+            showStatus('loading', `Generating with AI (${currentInventory!.components.length} components, ${currentInventory!.variables.length} variables)...`);
+            generateBtn.disabled = true;
+
+            try {
+                // 1. Get Selection Context from Figma (if any)
+                const selectionContext = await new Promise<any>((resolve) => {
+                    const handler = (event: MessageEvent) => {
+                        const msg = event.data.pluginMessage;
+                        if (msg.type === 'selection-context') {
+                            window.removeEventListener('message', handler);
+                            resolve(msg.context);
+                        }
+                    };
+                    window.addEventListener('message', handler);
+                    parent.postMessage({ pluginMessage: { type: 'get-selection-context' } }, '*');
+
+                    // Timeout fallback after 1s
+                    setTimeout(() => {
+                        window.removeEventListener('message', handler);
+                        resolve(undefined);
+                    }, 1000);
+                });
+
+                if (selectionContext) {
+                    console.log('Using selection context:', selectionContext);
+                }
+
+                // Always use Antigravity pipeline (multi-step reasoning)
+                console.log('Using Antigravity pipeline');
+                showStatus('loading', 'Analyzing intent and making design decisions...');
+
+                // Send to plugin for Antigravity generation
+                parent.postMessage({
+                    pluginMessage: {
+                        type: 'generate-antigravity',
+                        intent,
+                        apiKey,
+                        selectionContext: selectionContext || null
+                    }
+                }, '*');
+
+            } catch (error: any) {
+                console.error('Generation error:', error);
+                const userError = formatError(error);
+                showStructuredError(userError);
+                generateBtn.disabled = false;
+            }
+        });
+
+        // Start cooldown timer
+        startCooldownTimer();
+    };
+}
 
 // Handle messages from plugin
 window.onmessage = (event) => {
@@ -377,20 +424,20 @@ function showStatus(type: 'loading' | 'success' | 'error', message: string) {
 function showStructuredError(error: UserFacingError) {
     statusArea.innerHTML = `
         <div class="error-details">
-            <h3>${error.title}</h3>
-            <p>${error.message}</p>
+            <h3>${escapeHtml(error.title)}</h3>
+            <p>${escapeHtml(error.message)}</p>
             ${error.suggestions.length > 0 ? `
                 <div class="suggestions">
                     <strong>Suggestions:</strong>
                     <ul>
-                        ${error.suggestions.map(s => `<li>${s}</li>`).join('')}
+                        ${error.suggestions.map(s => `<li>${escapeHtml(s)}</li>`).join('')}
                     </ul>
                 </div>
             ` : ''}
             ${error.technicalDetails ? `
                 <details class="technical-details">
                     <summary>Technical Details</summary>
-                    <pre>${error.technicalDetails}</pre>
+                    <pre>${escapeHtml(error.technicalDetails)}</pre>
                 </details>
             ` : ''}
         </div>
@@ -403,16 +450,34 @@ function showRenderErrors(errors: RenderError[]) {
     if (errors.length === 0) return;
 
     console.error('Render errors:', errors);
-    const errorList = errors.map(e => `${e.nodeId}: ${e.message}`).join('\n');
-    console.warn('Some elements had errors during rendering:', errorList);
+
+    const banner = document.createElement('div');
+    banner.className = 'render-issue-banner error';
+    banner.innerHTML = `
+        <div class="render-issue-header">⚠ ${escapeHtml(String(errors.length))} element${errors.length > 1 ? 's' : ''} failed to render</div>
+        <ul class="render-issue-list">
+            ${errors.map(e => `<li>${escapeHtml(e.nodeId || 'unknown')}: ${escapeHtml(e.message)}</li>`).join('')}
+        </ul>
+    `;
+    statusArea.prepend(banner);
+    statusArea.style.display = 'block';
 }
 
 function showRenderWarnings(warnings: RenderError[]) {
     if (warnings.length === 0) return;
 
     console.warn('Render warnings:', warnings);
-    const warningList = warnings.map(w => `${w.nodeId}: ${w.message}`).join('\n');
-    console.info('Rendering completed with warnings:', warningList);
+
+    const banner = document.createElement('div');
+    banner.className = 'render-issue-banner warning';
+    banner.innerHTML = `
+        <div class="render-issue-header">ℹ ${escapeHtml(String(warnings.length))} rendering note${warnings.length > 1 ? 's' : ''}</div>
+        <ul class="render-issue-list">
+            ${warnings.map(w => `<li>${escapeHtml(w.nodeId || 'unknown')}: ${escapeHtml(w.message)}</li>`).join('')}
+        </ul>
+    `;
+    statusArea.prepend(banner);
+    statusArea.style.display = 'block';
 }
 
 function startCooldownTimer() {
@@ -438,7 +503,7 @@ function startCooldownTimer() {
 function showProgress(step: string, progress: number) {
     statusArea.innerHTML = `
         <div class="progress-container">
-            <div class="progress-text">${step}</div>
+            <div class="progress-text">${escapeHtml(step)}</div>
             <div class="progress-bar">
                 <div class="progress-fill" style="width: ${progress}%"></div>
             </div>
@@ -451,7 +516,7 @@ function showProgress(step: string, progress: number) {
 function showGenerationProgress(current: number, total: number, percentage: number) {
     statusArea.innerHTML = `
         <div class="progress-container">
-            <div class="progress-text">Creating ${current} of ${total} elements...</div>
+            <div class="progress-text">Creating ${escapeHtml(String(current))} of ${escapeHtml(String(total))} elements...</div>
             <div class="progress-bar">
                 <div class="progress-fill" style="width: ${percentage}%"></div>
             </div>
@@ -474,25 +539,36 @@ function showGenerationProgress(current: number, total: number, percentage: numb
 
 // --- APP ROVAL & CLARIFICATION ---
 
-function showApprovalDialog(data: any) {
+interface ApprovalDialogData {
+    confidence?: { score?: number };
+    reasoning?: { layoutChoice?: string };
+    designDecisions?: Array<{ element?: string; decision: string }>;
+}
+
+function showApprovalDialog(data: ApprovalDialogData) {
     const dialog = document.getElementById('approval-dialog');
     if (!dialog) return;
 
     // Confidence
     const score = Math.round((data.confidence?.score || 0) * 100);
-    document.getElementById('approval-confidence-score')!.textContent = `${score}%`;
-    document.getElementById('approval-confidence-fill')!.style.width = `${score}%`;
+    const confidenceScore = document.getElementById('approval-confidence-score');
+    const confidenceFill = document.getElementById('approval-confidence-fill') as HTMLElement | null;
+    const reasoningEl = document.getElementById('approval-reasoning');
+
+    if (confidenceScore) confidenceScore.textContent = `${score}%`;
+    if (confidenceFill) confidenceFill.style.width = `${score}%`;
 
     // Reasoning
-    document.getElementById('approval-reasoning')!.textContent =
-        data.reasoning?.layoutChoice || 'AI chose this layout based on your intent.';
+    if (reasoningEl) {
+        reasoningEl.textContent = data.reasoning?.layoutChoice || 'AI chose this layout based on your intent.';
+    }
 
     // Decisions
     const decisionsList = document.getElementById('approval-decisions');
     if (decisionsList) {
         const decisions = data.designDecisions || [];
-        decisionsList.innerHTML = decisions.map((d: any) =>
-            `<li><b>${d.element || 'Element'}</b>: ${d.decision}</li>`
+        decisionsList.innerHTML = decisions.map((d) =>
+            `<li><b>${escapeHtml(d.element || 'Element')}</b>: ${escapeHtml(d.decision)}</li>`
         ).join('') || '<li>Standard layout patterns applied.</li>';
     }
 
@@ -500,21 +576,41 @@ function showApprovalDialog(data: any) {
     statusArea.style.display = 'none'; // Hide loading status
     generateBtn.disabled = false; // Re-enable generation button
 
-    // Handlers
-    document.getElementById('approve-design-btn')!.onclick = () => {
-        dialog.style.display = 'none';
-        parent.postMessage({ pluginMessage: { type: 'approve-design' } }, '*');
-    };
+    // Handlers - with null checks
+    const approveBtn = document.getElementById('approve-design-btn');
+    const rejectBtn = document.getElementById('reject-design-btn');
 
-    document.getElementById('reject-design-btn')!.onclick = () => {
-        dialog.style.display = 'none';
-        parent.postMessage({ pluginMessage: { type: 'reject-design' } }, '*');
-    };
+    if (approveBtn) {
+        approveBtn.onclick = () => {
+            dialog.style.display = 'none';
+            parent.postMessage({ pluginMessage: { type: 'approve-design' } }, '*');
+        };
+    }
+
+    if (rejectBtn) {
+        rejectBtn.onclick = () => {
+            dialog.style.display = 'none';
+            parent.postMessage({ pluginMessage: { type: 'reject-design' } }, '*');
+        };
+    }
 }
 
-let currentClarificationRequest: any = null;
+interface ClarificationQuestion {
+    id: string;
+    text: string;
+    type: 'freeform' | 'multiple-choice' | 'multi-select';
+    options?: string[];
+}
 
-function showClarificationDialog(data: any) {
+interface ClarificationRequest {
+    questions: ClarificationQuestion[];
+    confidenceScore?: number;
+    originalIntent?: string;
+}
+
+let currentClarificationRequest: ClarificationRequest | null = null;
+
+function showClarificationDialog(data: ClarificationRequest) {
     currentClarificationRequest = data;
     const dialog = document.getElementById('clarification-dialog');
     if (!dialog) return;
@@ -528,7 +624,7 @@ function showClarificationDialog(data: any) {
         container.innerHTML = ''; // Clear previous
 
         // Group by category if needed, for now just list them
-        data.questions.forEach((q: any) => {
+        data.questions.forEach((q) => {
             const wrapper = document.createElement('div');
             wrapper.className = 'question-wrapper';
             wrapper.style.marginBottom = '16px';
@@ -554,7 +650,7 @@ function showClarificationDialog(data: any) {
                 optionsGroup.style.flexDirection = 'column';
                 optionsGroup.style.gap = '8px';
 
-                q.options?.forEach((opt: string) => {
+                q.options?.forEach((opt) => {
                     const optLabel = document.createElement('label');
                     optLabel.style.display = 'flex';
                     optLabel.style.alignItems = 'center';
@@ -582,13 +678,14 @@ function showClarificationDialog(data: any) {
     statusArea.style.display = 'none';
     generateBtn.disabled = false;
 
-    // Remove old listeners
+    // Remove old listeners - with null checks
     const btn = document.getElementById('close-clarification-btn');
-    const newBtn = btn!.cloneNode(true) as HTMLButtonElement;
-    btn!.parentNode!.replaceChild(newBtn, btn!);
-
-    newBtn.textContent = 'Submit Clarifications';
-    newBtn.onclick = () => submitClarifications();
+    if (btn && btn.parentNode) {
+        const newBtn = btn.cloneNode(true) as HTMLButtonElement;
+        btn.parentNode.replaceChild(newBtn, btn);
+        newBtn.textContent = 'Submit Clarifications';
+        newBtn.onclick = () => submitClarifications();
+    }
 }
 
 async function submitClarifications() {
@@ -598,94 +695,81 @@ async function submitClarifications() {
     const clarifications: string[] = [];
     const questions = currentClarificationRequest.questions;
 
-    questions.forEach((q: any) => {
+    questions.forEach((q) => {
         if (q.type === 'freeform') {
-            const input = document.querySelector(`input[data-qid="${q.id}"]`) as HTMLInputElement;
+            const input = document.querySelector(`input[data-qid="${q.id}"]`) as HTMLInputElement | null;
             if (input && input.value.trim()) {
                 clarifications.push(`${q.text} Answer: ${input.value.trim()}`);
             }
         } else {
             const inputs = document.querySelectorAll(`input[name="${q.id}"]:checked`);
             if (inputs.length > 0) {
-                const values = Array.from(inputs).map((i: any) => i.value).join(', ');
+                const values = Array.from(inputs).map((i) => (i as HTMLInputElement).value).join(', ');
                 clarifications.push(`${q.text} Preference: ${values}`);
             }
         }
     });
 
+    const clarificationDialog = document.getElementById('clarification-dialog');
+
     if (clarifications.length === 0) {
-        // User didn't answer anything, just close? Or force?
-        // Let's assume they want to proceed with original if they clicked submit empty
-        document.getElementById('clarification-dialog')!.style.display = 'none';
+        // User didn't answer anything, just close
+        if (clarificationDialog) clarificationDialog.style.display = 'none';
         return;
     }
 
-    document.getElementById('clarification-dialog')!.style.display = 'none';
+    if (clarificationDialog) clarificationDialog.style.display = 'none';
 
     // Construct enhanced intent
     const separation = "\n\nUser Clarifications:\n";
-    const enhancedIntent = currentClarificationRequest.originalIntent + separation + clarifications.join('\n');
-
-    // Update input to reflect this (optional, maybe hidden?)
-    // Actually, let's just trigger generation directly
+    const originalIntent = currentClarificationRequest.originalIntent || '';
+    const enhancedIntent = originalIntent + separation + clarifications.join('\n');
 
     showStatus('loading', 'Refining design with your feedback...');
     generateBtn.disabled = true;
 
     try {
-        const apiKey = (document.getElementById('api-key') as HTMLInputElement).value.trim();
+        const apiKeyEl = document.getElementById('api-key') as HTMLInputElement | null;
+        const apiKey = apiKeyEl?.value.trim() || '';
 
-        // Call generate again with enhanced intent
-        // The AI Service check "isClarificationResponse" will pass because we added "User Clarifications" (or similar)
-        // Wait, the check was `userIntent.includes('Clarifications:')`.
-        // My separation string uses "Clarifications:". Good.
-
-        // recursive call basically
-        const result = await generateRSNT(enhancedIntent, apiKey, currentInventory!);
-
-        // It could technically ask AGAIN if confidence is still low, unless recursion depth check
-        // But we added "Clarifications:" so ai-service will skip the check.
-
-        // Assuming result is RSNT now (since check skipped)
-        if ('questions' in result) {
-            // Should not happen due to check, but if logic changes...
-            showClarificationDialog(result);
+        if (!apiKey || !currentInventory) {
+            showStatus('error', 'Missing API key or inventory');
+            generateBtn.disabled = false;
             return;
         }
 
-        const rsnt = result as any;
-        console.log('Refined RSNT:', rsnt);
-
-        // Update iteration info
-        updateIterationInfo();
-
-        showStatus('loading', 'Creating refined design...');
+        // Use Antigravity pipeline for refined generation
+        showStatus('loading', 'Refining design with enhanced context...');
 
         parent.postMessage({
             pluginMessage: {
-                type: 'generate',
-                intent: enhancedIntent, // Send enhanced intent for history tracking
-                rsnt
+                type: 'generate-antigravity',
+                intent: enhancedIntent,
+                apiKey,
+                selectionContext: null
             }
         }, '*');
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Refinement error:', error);
-        showStatus('error', 'Refinement failed: ' + error.message);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        showStatus('error', 'Refinement failed: ' + errorMessage);
         generateBtn.disabled = false;
     }
 }
 
-let undoTimeout: any;
+let undoTimeout: ReturnType<typeof setTimeout> | null = null;
+
 function showUndoToast(message: string) {
     const toast = document.getElementById('undo-toast');
     if (!toast) return;
 
-    const timerFill = document.getElementById('undo-timer-fill');
+    const timerFill = document.getElementById('undo-timer-fill') as HTMLElement | null;
+    const undoMessage = document.querySelector('.undo-message') as HTMLElement | null;
 
     // Reset
     toast.style.display = 'flex';
-    document.querySelector('.undo-message')!.textContent = message;
+    if (undoMessage) undoMessage.textContent = message;
     if (timerFill) timerFill.style.width = '100%';
 
     if (undoTimeout) clearTimeout(undoTimeout);
@@ -704,14 +788,124 @@ function showUndoToast(message: string) {
         toast.style.display = 'none';
     }, 30000); // 30s
 
-    document.getElementById('toast-undo-btn')!.onclick = () => {
-        clearTimeout(undoTimeout);
-        toast.style.display = 'none';
-        parent.postMessage({ pluginMessage: { type: 'undo' } }, '*');
-    };
+    const toastUndoBtn = document.getElementById('toast-undo-btn');
+    const toastCloseBtn = document.getElementById('toast-close-btn');
 
-    document.getElementById('toast-close-btn')!.onclick = () => {
-        clearTimeout(undoTimeout);
-        toast.style.display = 'none';
-    };
+    if (toastUndoBtn) {
+        toastUndoBtn.onclick = () => {
+            if (undoTimeout) clearTimeout(undoTimeout);
+            toast.style.display = 'none';
+            parent.postMessage({ pluginMessage: { type: 'undo' } }, '*');
+        };
+    }
+
+    if (toastCloseBtn) {
+        toastCloseBtn.onclick = () => {
+            if (undoTimeout) clearTimeout(undoTimeout);
+            toast.style.display = 'none';
+        };
+    }
 }
+
+// ============================================================================
+// ANTIGRAVITY REASONING DIALOG
+// ============================================================================
+
+// Dialog close handlers
+closeAntigravityBtn.addEventListener('click', () => {
+    antigravityDialog.style.display = 'none';
+});
+
+dismissAntigravityBtn.addEventListener('click', () => {
+    antigravityDialog.style.display = 'none';
+});
+
+interface AntigravityReasoning {
+    intentSummary: string;
+    componentSelections: Array<{
+        requirement: string;
+        selection: string;
+        confidence: number;
+        reasoning: string;
+    }>;
+    layoutRationale: string;
+    overallConfidence: number;
+    warnings: string[];
+}
+
+function showAntigravityDialog(reasoning: AntigravityReasoning, phases: { intentTime: number; decisionTime: number; buildTime: number; totalTime: number }) {
+    // Intent summary
+    const intentEl = document.getElementById('antigravity-intent');
+    if (intentEl) intentEl.textContent = reasoning.intentSummary;
+
+    // Component selections
+    const componentsEl = document.getElementById('antigravity-components');
+    if (componentsEl) {
+        componentsEl.innerHTML = reasoning.componentSelections.map(c => `
+            <li>
+                <strong>${escapeHtml(c.requirement)}</strong> → ${escapeHtml(c.selection)}
+                <span class="confidence-badge" style="font-size: 10px; padding: 2px 6px; border-radius: 10px; background: ${c.confidence >= 0.8 ? 'var(--figma-color-bg-success)' : c.confidence >= 0.5 ? 'var(--figma-color-bg-warning)' : 'var(--figma-color-bg-danger)'};">
+                    ${(c.confidence * 100).toFixed(0)}%
+                </span>
+                <div class="text-xs text-secondary" style="margin-top: 2px;">${escapeHtml(c.reasoning)}</div>
+            </li>
+        `).join('');
+    }
+
+    // Layout rationale
+    const layoutEl = document.getElementById('antigravity-layout');
+    if (layoutEl) layoutEl.textContent = reasoning.layoutRationale;
+
+    // Warnings
+    const warningsSection = document.getElementById('antigravity-warnings-section');
+    const warningsEl = document.getElementById('antigravity-warnings');
+    if (warningsSection && warningsEl) {
+        if (reasoning.warnings.length > 0) {
+            warningsSection.style.display = 'block';
+            warningsEl.innerHTML = reasoning.warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('');
+        } else {
+            warningsSection.style.display = 'none';
+        }
+    }
+
+    // Confidence
+    const confidenceEl = document.getElementById('antigravity-confidence');
+    const confidenceFill = document.getElementById('antigravity-confidence-fill');
+    if (confidenceEl) confidenceEl.textContent = `${(reasoning.overallConfidence * 100).toFixed(0)}%`;
+    if (confidenceFill) {
+        const pct = reasoning.overallConfidence * 100;
+        (confidenceFill as HTMLElement).style.width = `${pct}%`;
+        (confidenceFill as HTMLElement).style.backgroundColor = pct >= 80 ? 'var(--figma-color-bg-success)' : pct >= 50 ? 'var(--figma-color-bg-warning)' : 'var(--figma-color-bg-danger)';
+    }
+
+    // Timing
+    const timingIntent = document.getElementById('timing-intent');
+    const timingDecision = document.getElementById('timing-decision');
+    const timingBuild = document.getElementById('timing-build');
+    const timingTotal = document.getElementById('timing-total');
+    if (timingIntent) timingIntent.textContent = String(phases.intentTime);
+    if (timingDecision) timingDecision.textContent = String(phases.decisionTime);
+    if (timingBuild) timingBuild.textContent = String(phases.buildTime);
+    if (timingTotal) timingTotal.textContent = String(phases.totalTime);
+
+    // Show dialog
+    antigravityDialog.style.display = 'flex';
+}
+
+// Handle Antigravity reasoning messages (extends main message handler)
+const originalOnMessage = window.onmessage;
+window.onmessage = (event) => {
+    // Call original handler first
+    if (originalOnMessage) {
+        originalOnMessage.call(window, event);
+    }
+
+    const msg = event.data.pluginMessage;
+    if (!msg) return;
+
+    // Handle Antigravity reasoning
+    if (msg.type === 'antigravity-reasoning') {
+        console.log('Received Antigravity reasoning:', msg.reasoning);
+        showAntigravityDialog(msg.reasoning, msg.phases);
+    }
+};

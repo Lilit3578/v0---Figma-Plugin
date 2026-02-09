@@ -47,7 +47,7 @@ export class ClassificationService {
      * Classify a batch of components
      */
     async classifyBatch(components: ComponentInfo[]): Promise<ClassificationBatchResult[]> {
-        if (!this.apiKey) {
+        if (!this.apiKey || !this.apiKey.trim()) {
             return components.map(c => ({
                 componentId: c.id,
                 result: null,
@@ -136,9 +136,13 @@ Return a JSON array where each object contains:
 - "reasoning": Brief explanation
 
 Components to analyze:
+// Include keys of properties and variants to help AI decide role
 ${JSON.stringify(components.map(c => ({
             componentId: c.id,
             name: c.name,
+            description: c.description || '',
+            variantProperties: c.variantProperties, // Pass the full object { prop: { values: [] } }
+            properties: c.properties ? Object.keys(c.properties) : [],
             structure: c.anatomy?.structureSignature,
             dimensions: c.anatomy?.dimensionInfo,
             layout: c.anatomy?.layoutInfo,
@@ -209,46 +213,52 @@ ${JSON.stringify(components.map(c => ({
     }
 
     /**
-     * Analyze a single property to determine its semantic mapping
+     * Analyze multiple properties for a component to determine their semantic mapping
      */
-    async analyzeProperty(request: { componentName: string, propertyName: string, values: string[] }): Promise<import('../types/classification').PropertyAnalysis> {
+    async analyzeComponentPropertiesBatch(request: { componentName: string, properties: { name: string, values: string[] }[] }): Promise<Record<string, import('../types/classification').PropertyAnalysis>> {
         if (!this.apiKey) {
             throw createAIError(ErrorCode.API_REQUEST_FAILED, {}, 'Missing API Key');
         }
 
-        const prompt = this.buildPropertyAnalysisPrompt(request);
-        return await this.callAI(prompt);
+        const prompt = this.buildPropertyAnalysisBatchPrompt(request);
+        const result = await this.callAI(prompt);
+
+        // Result should be an object keyed by propertyName with PropertyAnalysis value
+        // Validate result format briefly
+        if (typeof result !== 'object') {
+            throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { result }, 'Invalid AI Response format for property batch');
+        }
+        return result;
     }
 
-    private buildPropertyAnalysisPrompt(request: { componentName: string, propertyName: string, values: string[] }): string {
+    private buildPropertyAnalysisBatchPrompt(request: { componentName: string, properties: { name: string, values: string[] }[] }): string {
         return `
-Analyze this Figma component variant property and classify it.
+Analyze these Figma component properties and classify them.
 
 Component: ${request.componentName}
-Property Name: ${request.propertyName}
-Property Values: ${JSON.stringify(request.values)}
+Properties:
+${JSON.stringify(request.properties, null, 2)}
 
-What type of property is this?
-- SEMANTIC_VARIANT: Visual style variations (e.g., primary/secondary/outline/destructive)
+For each property, determine its type:
+- SEMANTIC_VARIANT: Visual style variations (e.g., primary/secondary/outline/destructive). Default choice for properties named "Type" or "Variant".
 - SEMANTIC_SIZE: Size variations (e.g., small/medium/large/xl)
 - SEMANTIC_STATE: Interaction states (e.g., default/hover/disabled/focus)
 - SEMANTIC_STYLE: Fill variations (e.g., filled/outline/ghost)
 - SEMANTIC_CUSTOM: Domain-specific variants (e.g., success/warning/error)
 
-For each value, map to the most likely semantic equivalent:
-- If SEMANTIC_VARIANT → map to: primary, secondary, ghost, destructive, outline, link
-- If SEMANTIC_SIZE → map to: xs, sm, md, lg, xl
-- If SEMANTIC_STATE → map to: default, hover, focus, active, disabled
-- If SEMANTIC_STYLE → map to: filled, outline, ghost
+And map each value to its semantic equivalent.
 
-Return JSON:
+Return JSON where keys are property names:
 {
-  "propertyType": "SEMANTIC_VARIANT",
-  "reasoning": "Values represent importance hierarchy",
-  "valueMappings": [
-    { "clientValue": "High", "semanticValue": "primary", "confidence": 0.88 },
-    { "clientValue": "Medium", "semanticValue": "secondary", "confidence": 0.85 }
-  ]
+  "PropertyName": {
+    "propertyType": "SEMANTIC_VARIANT",
+    "reasoning": "Values represent importance hierarchy",
+    "valueMappings": [
+      { "clientValue": "High", "semanticValue": "primary", "confidence": 0.88 },
+      { "clientValue": "Medium", "semanticValue": "secondary", "confidence": 0.85 }
+    ]
+  },
+  "AnotherProperty": { ... }
 }
 `;
     }

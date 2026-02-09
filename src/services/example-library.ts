@@ -8,39 +8,62 @@ export const EXAMPLE_LIBRARY: PromptExample[] = [
     {
         intent: 'Create a simple login form',
         tags: ['form', 'login', 'simple', 'input', 'button'],
-        explanation: 'Simple vertical form with email, password, and submit button',
+        explanation: 'Vertical card with title, two inputs that STRETCH to fill the card width, and a submit button. Inputs use counterAxisSizingMode STRETCH; the button does not (it hugs its label).',
         rsnt: {
-            id: 'login-form',
+            id: 'root',
             type: 'FRAME',
+            width: 1440,
+            height: 816,
             layoutMode: 'VERTICAL',
-            itemSpacing: 16,
-            padding: { top: 32, right: 32, bottom: 32, left: 32 },
-            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+            primaryAxisAlignItems: 'CENTER',
+            counterAxisAlignItems: 'CENTER',
+            padding: { top: 48, right: 120, bottom: 48, left: 120 },
             children: [
                 {
-                    id: 'title',
-                    type: 'TEXT',
-                    characters: 'Login',
-                    fontSize: 24,
-                    fills: [{ type: 'SOLID', color: { r: 0.1, g: 0.1, b: 0.1 } }]
-                },
-                {
-                    id: 'email-input',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'input-component-id',
-                    properties: { "label": "true", "helperText": "true" }
-                },
-                {
-                    id: 'password-input',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'input-component-id',
-                    properties: { "label": "true", "helperText": "false" }
-                },
-                {
-                    id: 'submit-btn',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'button-component-id',
-                    properties: { "state": "default", "size": "large" }
+                    id: 'login-card',
+                    type: 'FRAME',
+                    width: 400,
+                    layoutMode: 'VERTICAL',
+                    itemSpacing: 24,
+                    padding: { top: 32, right: 32, bottom: 32, left: 32 },
+                    fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+                    cornerRadius: 8,
+                    children: [
+                        {
+                            id: 'title',
+                            type: 'TEXT',
+                            characters: 'Welcome back',
+                            fontSize: 24
+                        },
+                        {
+                            id: 'subtitle',
+                            type: 'TEXT',
+                            characters: 'Sign in to your account',
+                            fontSize: 14,
+                            fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }]
+                        },
+                        {
+                            id: 'email-input',
+                            type: 'COMPONENT_INSTANCE',
+                            componentId: 'input-component-id',
+                            characters: 'Email',
+                            properties: { "label": "true" }
+                        },
+                        {
+                            id: 'password-input',
+                            type: 'COMPONENT_INSTANCE',
+                            componentId: 'input-component-id',
+                            characters: 'Password',
+                            properties: { "label": "true" }
+                        },
+                        {
+                            id: 'submit-btn',
+                            type: 'COMPONENT_INSTANCE',
+                            componentId: 'button-component-id',
+                            characters: 'Sign In',
+                            properties: { "Style": "primary" }
+                        }
+                    ]
                 }
             ]
         }
@@ -48,7 +71,7 @@ export const EXAMPLE_LIBRARY: PromptExample[] = [
     {
         intent: 'Create both desktop and mobile signup pages',
         tags: ['multi-page', 'responsive', 'signup', 'form'],
-        explanation: 'Multi-page layout with desktop (1440x1024) and mobile (375x812) versions',
+        explanation: 'Root frame is HORIZONTAL to hold two pages side by side. Each page has explicit width+height. Inner form card has fixed width and VERTICAL layout.',
         rsnt: {
             id: 'pages-container',
             type: 'FRAME',
@@ -64,13 +87,24 @@ export const EXAMPLE_LIBRARY: PromptExample[] = [
                     layoutMode: 'VERTICAL',
                     primaryAxisAlignItems: 'CENTER',
                     counterAxisAlignItems: 'CENTER',
+                    fills: [{ type: 'SOLID', color: { r: 0.97, g: 0.97, b: 0.97 } }],
                     children: [
                         {
-                            id: 'signup-form',
+                            id: 'signup-card',
                             type: 'FRAME',
+                            width: 440,
                             layoutMode: 'VERTICAL',
-                            itemSpacing: 16,
-                            children: []
+                            itemSpacing: 20,
+                            padding: { top: 40, right: 32, bottom: 40, left: 32 },
+                            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+                            cornerRadius: 8,
+                            children: [
+                                { id: 'desktop-heading', type: 'TEXT', characters: 'Create account', fontSize: 24 },
+                                { id: 'desktop-sub', type: 'TEXT', characters: 'Fill in the details below', fontSize: 14, fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }] },
+                                { id: 'desktop-name', type: 'COMPONENT_INSTANCE', componentId: 'input-component-id', characters: 'Full name' },
+                                { id: 'desktop-email', type: 'COMPONENT_INSTANCE', componentId: 'input-component-id', characters: 'Email' },
+                                { id: 'desktop-submit', type: 'COMPONENT_INSTANCE', componentId: 'button-component-id', characters: 'Sign Up', properties: { "Style": "primary" } }
+                            ]
                         }
                     ]
                 },
@@ -80,7 +114,15 @@ export const EXAMPLE_LIBRARY: PromptExample[] = [
                     width: 375,
                     height: 812,
                     layoutMode: 'VERTICAL',
-                    children: []
+                    padding: { top: 64, right: 20, bottom: 32, left: 20 },
+                    fills: [{ type: 'SOLID', color: { r: 0.97, g: 0.97, b: 0.97 } }],
+                    children: [
+                        { id: 'mobile-heading', type: 'TEXT', characters: 'Create account', fontSize: 24 },
+                        { id: 'mobile-sub', type: 'TEXT', characters: 'Fill in the details below', fontSize: 14, fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }] },
+                        { id: 'mobile-name', type: 'COMPONENT_INSTANCE', componentId: 'input-component-id', characters: 'Full name' },
+                        { id: 'mobile-email', type: 'COMPONENT_INSTANCE', componentId: 'input-component-id', characters: 'Email' },
+                        { id: 'mobile-submit', type: 'COMPONENT_INSTANCE', componentId: 'button-component-id', characters: 'Sign Up', properties: { "Style": "primary" } }
+                    ]
                 }
             ]
         }
@@ -88,28 +130,72 @@ export const EXAMPLE_LIBRARY: PromptExample[] = [
     {
         intent: 'Create a dashboard with 3 cards in a row',
         tags: ['dashboard', 'cards', 'grid', 'layout'],
-        explanation: 'Horizontal layout with 3 card components using auto-layout',
+        explanation: 'Root desktop frame. Inner row is HORIZONTAL with 3 card FRAMEs. Each card uses counterAxisSizingMode STRETCH so they fill equal height. Cards have internal padding and a title + body with different font sizes.',
         rsnt: {
-            id: 'dashboard',
+            id: 'root',
             type: 'FRAME',
-            layoutMode: 'HORIZONTAL',
-            itemSpacing: 24,
-            padding: { top: 24, right: 24, bottom: 24, left: 24 },
+            width: 1440,
+            height: 816,
+            layoutMode: 'VERTICAL',
+            padding: { top: 48, right: 120, bottom: 48, left: 120 },
+            fills: [{ type: 'SOLID', color: { r: 0.96, g: 0.96, b: 0.96 } }],
             children: [
                 {
-                    id: 'card-1',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'card-component-id'
+                    id: 'page-header',
+                    type: 'TEXT',
+                    characters: 'Dashboard',
+                    fontSize: 32
                 },
                 {
-                    id: 'card-2',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'card-component-id'
-                },
-                {
-                    id: 'card-3',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'card-component-id'
+                    id: 'cards-row',
+                    type: 'FRAME',
+                    layoutMode: 'HORIZONTAL',
+                    counterAxisSizingMode: 'AUTO',
+                    itemSpacing: 24,
+                    children: [
+                        {
+                            id: 'card-1',
+                            type: 'FRAME',
+                            layoutMode: 'VERTICAL',
+                            counterAxisSizingMode: 'AUTO',
+                            itemSpacing: 8,
+                            padding: { top: 24, right: 24, bottom: 24, left: 24 },
+                            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+                            cornerRadius: 8,
+                            children: [
+                                { id: 'card-1-title', type: 'TEXT', characters: 'Total Users', fontSize: 14, fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }] },
+                                { id: 'card-1-value', type: 'TEXT', characters: '2,847', fontSize: 32 }
+                            ]
+                        },
+                        {
+                            id: 'card-2',
+                            type: 'FRAME',
+                            layoutMode: 'VERTICAL',
+                            counterAxisSizingMode: 'AUTO',
+                            itemSpacing: 8,
+                            padding: { top: 24, right: 24, bottom: 24, left: 24 },
+                            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+                            cornerRadius: 8,
+                            children: [
+                                { id: 'card-2-title', type: 'TEXT', characters: 'Revenue', fontSize: 14, fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }] },
+                                { id: 'card-2-value', type: 'TEXT', characters: '$12,400', fontSize: 32 }
+                            ]
+                        },
+                        {
+                            id: 'card-3',
+                            type: 'FRAME',
+                            layoutMode: 'VERTICAL',
+                            counterAxisSizingMode: 'AUTO',
+                            itemSpacing: 8,
+                            padding: { top: 24, right: 24, bottom: 24, left: 24 },
+                            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+                            cornerRadius: 8,
+                            children: [
+                                { id: 'card-3-title', type: 'TEXT', characters: 'Conversion', fontSize: 14, fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }] },
+                                { id: 'card-3-value', type: 'TEXT', characters: '3.2%', fontSize: 32 }
+                            ]
+                        }
+                    ]
                 }
             ]
         }
@@ -117,34 +203,43 @@ export const EXAMPLE_LIBRARY: PromptExample[] = [
     {
         intent: 'Create a settings page with checkboxes',
         tags: ['settings', 'checkbox', 'list', 'vertical'],
-        explanation: 'Vertical list of checkbox components with labels',
+        explanation: 'Root desktop frame with a section heading (large) and a sub-label (small) to show hierarchy. Checkbox components sit in a vertical list with consistent 16px gaps.',
         rsnt: {
-            id: 'settings-page',
+            id: 'root',
             type: 'FRAME',
+            width: 1440,
+            height: 816,
             layoutMode: 'VERTICAL',
-            itemSpacing: 12,
-            padding: { top: 24, right: 24, bottom: 24, left: 24 },
+            padding: { top: 48, right: 120, bottom: 48, left: 120 },
             children: [
                 {
-                    id: 'title',
+                    id: 'settings-heading',
                     type: 'TEXT',
                     characters: 'Settings',
-                    fontSize: 20
+                    fontSize: 32
                 },
                 {
-                    id: 'option-1',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'checkbox-component-id'
+                    id: 'settings-sub',
+                    type: 'TEXT',
+                    characters: 'Manage your preferences',
+                    fontSize: 14,
+                    fills: [{ type: 'SOLID', color: { r: 0.4, g: 0.4, b: 0.4 } }]
                 },
                 {
-                    id: 'option-2',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'checkbox-component-id'
-                },
-                {
-                    id: 'option-3',
-                    type: 'COMPONENT_INSTANCE',
-                    componentId: 'checkbox-component-id'
+                    id: 'notifications-section',
+                    type: 'FRAME',
+                    layoutMode: 'VERTICAL',
+                    counterAxisSizingMode: 'AUTO',
+                    itemSpacing: 16,
+                    padding: { top: 24, right: 24, bottom: 24, left: 24 },
+                    fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
+                    cornerRadius: 8,
+                    children: [
+                        { id: 'section-label', type: 'TEXT', characters: 'Notifications', fontSize: 20 },
+                        { id: 'option-1', type: 'COMPONENT_INSTANCE', componentId: 'checkbox-component-id', characters: 'Email notifications' },
+                        { id: 'option-2', type: 'COMPONENT_INSTANCE', componentId: 'checkbox-component-id', characters: 'Push notifications' },
+                        { id: 'option-3', type: 'COMPONENT_INSTANCE', componentId: 'checkbox-component-id', characters: 'SMS alerts' }
+                    ]
                 }
             ]
         }

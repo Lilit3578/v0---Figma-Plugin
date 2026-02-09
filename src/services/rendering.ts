@@ -4,6 +4,7 @@ import { RenderResult, RenderError, createRenderErrorUI, createExecutionError, c
 import { fontManager } from './font-manager';
 import { processInChunks } from '../utils/chunking';
 import { ResolutionResult, ExecutionInstructions, ComponentInstructions, FrameInstructions } from '../types/resolution-types';
+import { propertyMappingService } from './property-mapping';
 
 /**
  * Render RSNT node to Figma
@@ -41,6 +42,14 @@ export async function renderRSNT(
                     figmaNode = await renderText(rsnt);
                     break;
                 default:
+                    // Safety net: the AI sometimes uses semantic type names (H1, Button,
+                    // etc.) instead of "COMPONENT_INSTANCE". If componentId is present the
+                    // intent is clear — route to component rendering regardless of type string.
+                    if (rsnt.componentId) {
+                        console.warn(`Node "${rsnt.id}" has unrecognised type "${rsnt.type}" but componentId is set — treating as COMPONENT_INSTANCE`);
+                        figmaNode = await renderComponentInstance(rsnt);
+                        break;
+                    }
                     throw createExecutionError(ErrorCode.NODE_CREATION_FAILED, { type: rsnt.type }, `Unknown node type: ${rsnt.type}`);
             }
 
@@ -132,11 +141,91 @@ async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentIns
     const instance = component.type === 'COMPONENT_SET'
         ? (component as ComponentSetNode).defaultVariant.createInstance()
         : (component as ComponentNode).createInstance();
+
+    // --- Property application with semantic mapping ---
     if (node.properties) {
         try {
-            instance.setProperties(node.properties);
+            // Separate text-content keys from real variant/style properties.
+            // The AI may place text in properties as "text" or "content".
+            const textKeys = ['text', 'content', 'characters'];
+            const propsForMapping: Record<string, string> = {};
+            let textFromProps: string | undefined;
+
+            for (const [key, value] of Object.entries(node.properties)) {
+                if (textKeys.includes(key)) {
+                    textFromProps = value;
+                } else {
+                    propsForMapping[key] = value;
+                }
+            }
+
+            // Map semantic property names (e.g. variant: "primary") to the actual
+            // component property names (e.g. Emphasis: "High") using the mapping
+            // that was built during discovery.
+            const mapped = propertyMappingService.applyMappingWithWarnings(node.componentId, propsForMapping);
+
+            if (mapped.warnings.length > 0) {
+                console.warn(`Property mapping for "${node.name || node.id}":`, mapped.warnings);
+            }
+
+            // Use mapped properties if the service produced any; otherwise fall back
+            // to raw properties (handles cases where the AI used the actual prop names).
+            const propsToSet = Object.keys(mapped.componentProperties).length > 0
+                ? mapped.componentProperties
+                : propsForMapping;
+
+            if (Object.keys(propsToSet).length > 0) {
+                // Resolve against the component's actual property definitions.
+                // The AI frequently outputs generic semantic names (e.g. "variant")
+                // instead of the real property names (e.g. "Style"). This step
+                // matches by VALUE: if the AI says { variant: "primary" } and the
+                // component has a "Style" property whose variantOptions include
+                // "primary", it resolves to { Style: "primary" }.
+                const resolved = resolvePropsAgainstDefinitions(
+                    component as ComponentNode | ComponentSetNode, propsToSet
+                );
+                if (Object.keys(resolved).length > 0) {
+                    instance.setProperties(resolved);
+                }
+            }
+
+            // Surface the extracted text for the text-application step below
+            if (textFromProps && !node.characters) {
+                (node as any)._textFromProps = textFromProps;
+            }
         } catch (error) {
-            console.warn('Failed to set some properties:', error);
+            console.warn(`Failed to set properties on "${node.name || node.id}":`, error);
+        }
+    }
+
+    // --- Text content application ---
+    // Components are atomic (no children). To update their internal text the renderer
+    // finds TEXT layers inside the instance and overwrites characters.
+    // The text source is node.characters (standard RSNT field) or a "text"/"content"
+    // key that was extracted from properties above.
+    const textContent = node.characters || (node as any)._textFromProps;
+    if (textContent) {
+        try {
+            const textNodes = instance.findAll(n => n.type === 'TEXT') as TextNode[];
+            if (textNodes.length > 0) {
+                const textNode = textNodes[0];
+
+                // Figma requires all fonts used by a text node to be loaded before
+                // characters can be written. Load whatever fonts are currently in use.
+                const currentLen = textNode.characters.length;
+                const fontsToLoad: FontName[] = currentLen > 0
+                    ? textNode.getRangeAllFontNames(0, currentLen)
+                    : [textNode.fontName as FontName];
+                await Promise.all(fontsToLoad.map(f => figma.loadFontAsync(f)));
+
+                textNode.characters = textContent;
+            } else {
+                // Component has no TEXT layer — text will be invisible.
+                // This commonly happens when the AI picks an icon-only variant.
+                console.warn(`[text-lost] "${node.name || node.id}": characters="${textContent}" but component has no TEXT layer. The component may be an icon-only variant.`);
+            }
+        } catch (e) {
+            console.warn(`Failed to set text on "${node.name || node.id}":`, e);
         }
     }
 
@@ -148,8 +237,7 @@ async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentIns
         if (overrides.strokes && 'strokes' in instance) {
             instance.strokes = overrides.strokes;
         }
-        if (overrides.text && instance.type === 'INSTANCE') {
-            // Find text nodes within instance and update
+        if (overrides.text) {
             const textNodes = instance.findAll(n => n.type === 'TEXT') as TextNode[];
             for (const textNode of textNodes) {
                 textNode.characters = overrides.text;
@@ -183,6 +271,12 @@ async function renderText(node: RSNT_Node): Promise<TextNode> {
     text.fontName = font;
     if (node.characters) text.characters = node.characters;
     if (node.fontSize) text.fontSize = node.fontSize;
+    // If a width is specified, set it and switch to fixed-width wrapping mode
+    // so multi-line paragraphs wrap correctly instead of extending as a single line.
+    if (node.width !== undefined) {
+        text.textAutoResize = 'HEIGHT';
+        text.resize(node.width, text.height);
+    }
     return text;
 }
 
@@ -203,12 +297,25 @@ function applyFills(figmaNode: any, rsnt: RSNT_Node, warnings: RenderError[], er
             }
             fills.push({ type: 'SOLID', color: normalizeColor(fill.color) });
         } else if (fill.type === 'VARIABLE' && fill.variableId) {
-            const value = resolveVariable(fill.variableId, 'COLOR');
-            if (value && typeof value === 'object' && 'r' in value) {
-                fills.push({ type: 'SOLID', color: { r: value.r, g: value.g, b: value.b } });
+            // Bind the variable so the fill updates when the design token changes
+            const variable = figma.variables.getVariableById(fill.variableId);
+            if (variable) {
+                // Resolve current value as fallback color
+                const value = resolveVariable(fill.variableId, 'COLOR');
+                const fallbackColor = (value && typeof value === 'object' && 'r' in value)
+                    ? { r: value.r, g: value.g, b: value.b, a: 1 }
+                    : { r: 0, g: 0, b: 0, a: 1 };
+
+                fills.push({
+                    type: 'SOLID',
+                    color: fallbackColor,
+                    boundVariables: {
+                        color: { type: 'VARIABLE_REF', variableId: fill.variableId }
+                    }
+                } as any); // boundVariables supported in Figma API v1.98+
             } else {
                 fills.push({ type: 'SOLID', color: { r: 1, g: 1, b: 1 } });
-                warnings.push(createRenderErrorUI(createExecutionError(ErrorCode.VARIABLE_NOT_FOUND), rsnt.id, 'warning', 'Variable fallback applied'));
+                warnings.push(createRenderErrorUI(createExecutionError(ErrorCode.VARIABLE_NOT_FOUND), rsnt.id, 'warning', `Variable ${fill.variableId} not found — using fallback`));
             }
         }
     }
@@ -240,12 +347,92 @@ function applyConstraints(figmaNode: any, rsnt: RSNT_Node) {
     if (rsnt.constraints) figmaNode.constraints = rsnt.constraints;
 }
 
+/**
+ * Resolve AI-provided property names against a component's actual definitions.
+ * The AI often outputs generic semantic keys (e.g. "variant", "size", "type")
+ * instead of the real Figma property names (e.g. "Style", "Size").
+ * Strategy: direct key match first; if the key is unknown, scan every VARIANT
+ * property's variantOptions for a match on the VALUE and use that property name.
+ */
+function resolvePropsAgainstDefinitions(
+    component: ComponentNode | ComponentSetNode,
+    props: Record<string, string>
+): Record<string, string> {
+    const defs = component.componentPropertyDefinitions;
+    const resolved: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(props)) {
+        // Direct match — AI used the correct property name
+        if (defs[key]) {
+            resolved[key] = value;
+            continue;
+        }
+
+        // Value-based match — find the VARIANT property that accepts this value
+        let matched = false;
+        for (const [propName, propDef] of Object.entries(defs)) {
+            if (propDef.type === 'VARIANT' && propDef.variantOptions?.includes(value)) {
+                if (!resolved[propName]) {
+                    resolved[propName] = value;
+                    matched = true;
+                    console.log(`  Resolved property "${key}: ${value}" → "${propName}: ${value}"`);
+                }
+                break;
+            }
+        }
+
+        if (!matched) {
+            console.warn(`  Could not resolve property "${key}: ${value}" — no matching definition`);
+        }
+    }
+
+    return resolved;
+}
+
+// CSS-to-Figma alignment value mapping. The AI sometimes outputs CSS flexbox
+// terminology (FLEX_START, FLEX_END, etc.) instead of Figma enum values.
+const ALIGNMENT_MAP: Record<string, string> = {
+    'FLEX_START': 'MIN', 'FLEX_END': 'MAX',
+    'START': 'MIN', 'END': 'MAX',
+    'JUSTIFY_START': 'MIN', 'JUSTIFY_END': 'MAX',
+    'JUSTIFY_CENTER': 'CENTER', 'JUSTIFY_BETWEEN': 'SPACE_BETWEEN',
+    'STRETCH': 'MIN', // best Figma approximation for stretch
+};
+const VALID_PRIMARY_ALIGN = new Set(['MIN', 'MAX', 'CENTER', 'SPACE_BETWEEN']);
+const VALID_COUNTER_ALIGN = new Set(['MIN', 'MAX', 'CENTER']);
+
+function sanitizeAlignment(value: string, validSet: Set<string>): string | null {
+    const upper = value.toUpperCase();
+    if (validSet.has(upper)) return upper;
+    const mapped = ALIGNMENT_MAP[upper];
+    if (mapped && validSet.has(mapped)) return mapped;
+    console.warn(`Unsupported alignment value "${value}" — skipped`);
+    return null;
+}
+
 function applyLayout(figmaNode: any, rsnt: RSNT_Node) {
     if (rsnt.layoutMode) figmaNode.layoutMode = rsnt.layoutMode;
     if (rsnt.primaryAxisSizingMode) figmaNode.primaryAxisSizingMode = rsnt.primaryAxisSizingMode;
     if (rsnt.counterAxisSizingMode) figmaNode.counterAxisSizingMode = rsnt.counterAxisSizingMode;
-    if (rsnt.primaryAxisAlignItems) figmaNode.primaryAxisAlignItems = rsnt.primaryAxisAlignItems;
-    if (rsnt.counterAxisAlignItems) figmaNode.counterAxisAlignItems = rsnt.counterAxisAlignItems;
+
+    // Safety net: when auto-layout is enabled but the AI omitted both width and
+    // counterAxisSizingMode, Figma defaults to HUG — the frame shrinks to its
+    // content width.  Defaulting to STRETCH instead makes the frame fill its
+    // parent's available space, which is the expected behaviour for content
+    // containers.  If the AI DID set an explicit width, the resize() call below
+    // will pin it to that value afterward.
+    if (rsnt.layoutMode && rsnt.layoutMode !== 'NONE' && !rsnt.counterAxisSizingMode && rsnt.width === undefined) {
+        figmaNode.counterAxisSizingMode = 'STRETCH';
+    }
+
+    if (rsnt.primaryAxisAlignItems) {
+        const safe = sanitizeAlignment(rsnt.primaryAxisAlignItems, VALID_PRIMARY_ALIGN);
+        if (safe) figmaNode.primaryAxisAlignItems = safe;
+    }
+    if (rsnt.counterAxisAlignItems) {
+        const safe = sanitizeAlignment(rsnt.counterAxisAlignItems, VALID_COUNTER_ALIGN);
+        if (safe) figmaNode.counterAxisAlignItems = safe;
+    }
 
     if (rsnt.itemSpacing !== undefined) {
         if (typeof rsnt.itemSpacing === 'number') {
@@ -269,6 +456,15 @@ function applyLayout(figmaNode: any, rsnt: RSNT_Node) {
         applyPadding('right', rsnt.padding.right);
         applyPadding('bottom', rsnt.padding.bottom);
         applyPadding('left', rsnt.padding.left);
+    }
+
+    // Re-apply explicit dimensions after all layout properties are set.
+    // Setting layoutMode switches Figma to auto-layout which defaults to HUG sizing,
+    // discarding any dimensions set before layoutMode was applied.
+    if (rsnt.layoutMode && rsnt.layoutMode !== 'NONE' && (rsnt.width !== undefined || rsnt.height !== undefined)) {
+        const w = rsnt.width ?? figmaNode.width;
+        const h = rsnt.height ?? figmaNode.height;
+        figmaNode.resize(w, h);
     }
 }
 
@@ -409,10 +605,31 @@ function applyVariableBindings(
             if (variable) {
                 // Determine which property to bind
                 // Note: Figma API has specific field names for variable bindings
-                if (property.includes('fill') || property.includes('color')) {
-                    // For fills, we need to use the actual fill binding
-                    // This is a simplified version - real implementation would be more sophisticated
-                    console.log(`Variable binding for fills not fully supported yet: ${variableId}`);
+                if (property === 'fill' || property === 'textFill' || property.includes('color')) {
+                    // Bind variable to fill using boundVariables on the paint
+                    try {
+                        const currentFills = frame.fills;
+                        if (currentFills !== figma.mixed && currentFills.length > 0) {
+                            const existingColor = (currentFills[0] as SolidPaint).color || { r: 0, g: 0, b: 0 };
+                            frame.fills = [{
+                                type: 'SOLID',
+                                color: existingColor,
+                                boundVariables: {
+                                    color: { type: 'VARIABLE_REF', variableId }
+                                }
+                            } as any];
+                        } else {
+                            frame.fills = [{
+                                type: 'SOLID',
+                                color: { r: 0, g: 0, b: 0, a: 1 },
+                                boundVariables: {
+                                    color: { type: 'VARIABLE_REF', variableId }
+                                }
+                            } as any];
+                        }
+                    } catch (e) {
+                        console.warn('Could not bind fill variable:', e);
+                    }
                 } else if (property.includes('padding')) {
                     // Bind specific padding side
                     const side = property.replace('padding', '').toLowerCase();

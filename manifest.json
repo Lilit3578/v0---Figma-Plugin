@@ -5,7 +5,11 @@
   "main": "dist/main.js",
   "ui": "dist/ui.html",
   "editorType": [
-    "figma"
+    "figma",
+    "dev"
+  ],
+  "capabilities": [
+    "inspect"
   ],
   "networkAccess": {
     "allowedDomains": [

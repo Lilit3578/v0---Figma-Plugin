@@ -7,6 +7,12 @@ export class RateLimiter {
     private minInterval: number;
     private maxRetries: number;
     private initialBackoff: number;
+    private queue: Array<{
+        fn: () => Promise<any>;
+        resolve: (value: any) => void;
+        reject: (error: any) => void;
+    }> = [];
+    private isProcessing: boolean = false;
 
     constructor(minIntervalMs: number = 1000, maxRetries: number = 3, initialBackoff: number = 2000) {
         this.minInterval = minIntervalMs;
@@ -22,12 +28,47 @@ export class RateLimiter {
     }
 
     /**
-     * Execute a function with rate limiting, retries, and exponential backoff
+     * Execute a function with rate limiting, retries, and exponential backoff.
+     * Uses a proper queue to serialize concurrent calls.
      */
     async executeWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+        return new Promise<T>((resolve, reject) => {
+            this.queue.push({ fn, resolve, reject });
+            this.processQueue();
+        });
+    }
+
+    /**
+     * Process the queue one item at a time
+     */
+    private async processQueue(): Promise<void> {
+        if (this.isProcessing || this.queue.length === 0) {
+            return;
+        }
+
+        this.isProcessing = true;
+
+        while (this.queue.length > 0) {
+            const item = this.queue.shift()!;
+
+            try {
+                const result = await this.executeWithRetryInternal(item.fn);
+                item.resolve(result);
+            } catch (error) {
+                item.reject(error);
+            }
+        }
+
+        this.isProcessing = false;
+    }
+
+    /**
+     * Internal execution with retry logic
+     */
+    private async executeWithRetryInternal<T>(fn: () => Promise<T>): Promise<T> {
         let attempt = 0;
 
-        while (true) {
+        while (attempt <= this.maxRetries) {
             // Rate limiting check
             const now = Date.now();
             const timeSinceLastCall = now - this.lastCall;
@@ -43,42 +84,49 @@ export class RateLimiter {
             } catch (error: any) {
                 attempt++;
 
-                // Check if we should retry
-                const isRateLimit = this.isRateLimitError(error);
+                const retryable = this.isRetryableError(error);
 
-                if (!isRateLimit && attempt > this.maxRetries) {
+                // Give up after maxRetries regardless of error type
+                if (attempt > this.maxRetries) {
                     throw error;
                 }
 
-                if (isRateLimit || attempt <= this.maxRetries) {
-                    // If it's a rate limit, use the retry-after header if available, or exponential backoff
-                    let delay = this.initialBackoff * Math.pow(2, attempt - 1);
-
-                    // Add jitter
-                    delay += Math.random() * 1000;
-
-                    // Parse retry delay from error message if available (specific to Gemini/Google APIs)
-                    const errorMsg = error.message || '';
-                    const retryMatch = errorMsg.match(/"retryDelay":\s*"([\d.]+)s"/);
-                    if (retryMatch) {
-                        const seconds = parseFloat(retryMatch[1]);
-                        if (!isNaN(seconds)) {
-                            delay = Math.max(delay, seconds * 1000 + 1000); // Add buffer
-                        }
-                    }
-
-                    console.warn(`Rate limit hit (attempt ${attempt}). Waiting ${Math.round(delay)}ms before retry...`);
-
-                    // Cap max delay to 60s
-                    delay = Math.min(delay, 60000);
-
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                    continue;
+                // Only retry on rate limit or transient network errors
+                if (!retryable) {
+                    throw error;
                 }
 
-                throw error;
+                let delay = this.initialBackoff * Math.pow(2, attempt - 1);
+
+                // Add jitter
+                delay += Math.random() * 1000;
+
+                // Parse retry delay from error message if available (Gemini includes retryDelay)
+                const errorMsg = error.message || '';
+                const retryMatch = errorMsg.match(/"retryDelay":\s*"([\d.]+)s"/);
+                if (retryMatch) {
+                    const seconds = parseFloat(retryMatch[1]);
+                    if (!isNaN(seconds)) {
+                        delay = Math.max(delay, seconds * 1000 + 1000);
+                    }
+                }
+
+                // Cap max delay to 60s
+                delay = Math.min(delay, 60000);
+
+                const reason = this.isRateLimitError(error) ? 'Rate limit' : 'Network error';
+                console.warn(`${reason} (attempt ${attempt}/${this.maxRetries}). Waiting ${Math.round(delay)}ms before retry...`);
+
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
+
+        // This should never be reached due to the throw in the loop, but TypeScript needs it
+        throw new Error('Max retries exceeded');
+    }
+
+    private isRetryableError(error: any): boolean {
+        return this.isRateLimitError(error) || this.isNetworkError(error);
     }
 
     private isRateLimitError(error: any): boolean {
@@ -88,6 +136,20 @@ export class RateLimiter {
             msg.includes('rate limit') ||
             msg.includes('quota') ||
             msg.includes('too many requests')
+        );
+    }
+
+    private isNetworkError(error: any): boolean {
+        const msg = (error.message || '').toLowerCase();
+        return (
+            msg.includes('failed to fetch') ||
+            msg.includes('timed out') ||
+            msg.includes('err_timed_out') ||
+            msg.includes('err_quic') ||
+            msg.includes('network') ||
+            msg.includes('econnreset') ||
+            msg.includes('econnrefused') ||
+            error instanceof TypeError // fetch throws TypeError on network failure
         );
     }
 
@@ -126,5 +188,7 @@ export class RateLimiter {
 }
 
 // Export a singleton for global rate limiting
-export const globalRateLimiter = new RateLimiter(2000, 5, 2000);
+// Gemini Free Tier limit is 15 RPM (1 request every 4 seconds)
+// We set it to 4000ms to be safe.
+export const globalRateLimiter = new RateLimiter(4000, 5, 4000);
 

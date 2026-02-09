@@ -20,21 +20,11 @@ export class CacheService {
     private calculateFileStructureHash(): string {
         let structureString = '';
 
-        // Traverse pages
+        // Traverse pages only - including top-level frames makes cache strict and fragile
+        // (e.g. adding a design to the page invalidates the component cache, which is unnecessary)
         for (const page of figma.root.children) {
             if (page.type !== 'PAGE') continue;
             structureString += `${page.id}:${page.name}|`;
-
-            // Traverse top-level frames (shallow)
-            // We limit to top 50 to avoid perf hit on massive files
-            let frameCount = 0;
-            for (const node of page.children) {
-                if (frameCount > 50) break;
-                if (node.type === 'FRAME' || node.type === 'SECTION') {
-                    structureString += `${node.id}:${node.name}|`;
-                    frameCount++;
-                }
-            }
         }
 
         // Simple hash function (DJB2 or similar simple string hash)

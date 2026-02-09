@@ -12,12 +12,11 @@
 import { RSNT_Node } from '../types/rsnt';
 import { DesignSystemInventory, ComponentInfo, VariableInfo } from './auto-discovery';
 import { componentSelector } from './component-selector';
-import * as variableResolver from './variable-resolver';
-import * as primitiveScanner from './primitive-scanner';
+import { resolveVariable, resolveVariableWithContext } from './variable-resolver';
 import { resolutionTracker } from './resolution-tracker';
 import { WarningCategory, WarningSeverity } from '../types/resolution-types';
 import { TAILWIND_DEFAULTS, getTailwindColor, getTailwindSpacing, getTailwindRadius } from '../constants/tailwind-defaults';
-import { normalizeColor } from '../libs/color-utils';
+import { normalizeColor, rgbToHex } from '../libs/color-utils';
 import { propertyMappingService } from './property-mapping';
 
 // ============================================================================
@@ -490,7 +489,7 @@ async function tryTier3VariableConstruction(
     const successRate = successful.length / resolutions.length;
 
     if (successRate >= 0.7) {
-        const successfulFiltered = successful.filter((r): r is { variableId: string; confidence: number } => r !== null);
+        const successfulFiltered = successful.filter((r): r is { variableId: string; confidence: number; propertyKey: string } => r !== null);
         const variableBindings = buildVariableBindings(successfulFiltered);
         const styling = buildStylingFromClasses(classes, successfulFiltered);
         const unresolvedClasses = listUnresolvedClasses(classes, resolutions);
@@ -514,30 +513,95 @@ async function tryTier3VariableConstruction(
 }
 
 /**
- * Resolve a Tailwind class to a design variable
- * This is a placeholder - should integrate with existing variable resolution service
+ * Resolve a Tailwind class to a design variable using variable-resolver
+ * Parses the class to determine semantic token, then resolves via exact/alias/AI/CIELAB tiers
  */
 async function resolveClassToVariable(
     className: string,
     inventory: DesignSystemInventory
-): Promise<{ variableId: string; confidence: number } | null> {
-    // TODO: Integrate with existing 3-tier variable resolution from Phase 1.4
-    // For now, return null to force fallback to Tier 4/5
+): Promise<{ variableId: string; confidence: number; propertyKey: string } | null> {
+    let tokenName: string | null = null;
+    let propertyKey: string = '';
+    let hexColor: string | undefined = undefined;
+
+    // --- Color classes: bg-*, text-* ---
+    if (className.startsWith('bg-')) {
+        const colorName = className.slice(3); // e.g. "primary", "blue-500", "white"
+        tokenName = `colors/${colorName.replace(/-/g, '/')}`;
+        propertyKey = 'fill';
+        hexColor = getTailwindColor(className) || undefined;
+    } else if (className.startsWith('text-') && !className.startsWith('text-sm') && !className.startsWith('text-xs') && !className.startsWith('text-lg') && !className.startsWith('text-2xl') && !className.startsWith('text-3xl') && !className.startsWith('text-4xl') && !className.startsWith('text-base')) {
+        // text-* that are colors (not font sizes)
+        const colorName = className.slice(5);
+        tokenName = `colors/${colorName.replace(/-/g, '/')}`;
+        propertyKey = 'textFill';
+        hexColor = getTailwindColor(className) || undefined;
+    }
+
+    // --- Spacing classes: p-*, px-*, py-*, gap-*, m-*, etc. ---
+    else if (className.match(/^(p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap)-(\d+)$/)) {
+        const match = className.match(/^(p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap)-(\d+)$/);
+        if (match) {
+            const prefix = match[1];
+            const num = match[2];
+            tokenName = `spacing/${num}`;
+            if (prefix === 'gap') propertyKey = 'itemSpacing';
+            else propertyKey = 'padding';
+        }
+    }
+
+    // --- Border radius: rounded-* ---
+    else if (className.startsWith('rounded')) {
+        const variant = className === 'rounded' ? 'DEFAULT' : className.slice(8); // "rounded-md" -> "md"
+        tokenName = `radius/${variant || 'DEFAULT'}`;
+        propertyKey = 'cornerRadius';
+    }
+
+    // --- Height/Width: h-*, w-* ---
+    else if (className.match(/^(h|w)-(\d+)$/)) {
+        const match = className.match(/^(h|w)-(\d+)$/);
+        if (match) {
+            tokenName = `spacing/${match[2]}`;
+            propertyKey = match[1] === 'h' ? 'height' : 'width';
+        }
+    }
+
+    if (!tokenName) return null;
+
+    try {
+        let result: Awaited<ReturnType<typeof resolveVariable>>;
+
+        if (hexColor && propertyKey === 'fill') {
+            // Use proximity-enabled resolution for colors
+            result = await resolveVariableWithContext(tokenName, hexColor, inventory);
+        } else {
+            result = await resolveVariable(tokenName, inventory);
+        }
+
+        if (result.variableId && result.confidence >= 0.7) {
+            return {
+                variableId: result.variableId,
+                confidence: result.confidence,
+                propertyKey
+            };
+        }
+    } catch (e) {
+        console.warn(`Failed to resolve variable for class "${className}":`, e);
+    }
+
     return null;
 }
 
 /**
- * Build variable bindings from successful resolutions
+ * Build variable bindings mapping property keys to variable IDs
  */
 function buildVariableBindings(
-    resolutions: Array<{ variableId: string; confidence: number }>
+    resolutions: Array<{ variableId: string; confidence: number; propertyKey: string }>
 ): Record<string, string> {
     const bindings: Record<string, string> = {};
 
     for (const resolution of resolutions) {
-        // Map variable to appropriate property
-        // This is simplified - real implementation would be more sophisticated
-        bindings[resolution.variableId] = resolution.variableId;
+        bindings[resolution.propertyKey] = resolution.variableId;
     }
 
     return bindings;
@@ -806,29 +870,6 @@ async function tryTier4PrimitiveFallback(
     };
 }
 
-/**
- * Convert RGB to hex (helper for Tier 4)
- */
-function rgbToHex(rgb: RGB): string {
-    const r = Math.round(rgb.r * 255);
-    const g = Math.round(rgb.g * 255);
-    const b = Math.round(rgb.b * 255);
-    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`.toUpperCase();
-}
-
-/**
- * Convert hex to RGB (helper for Tier 4)
- */
-function hexToRgb(hex: string): RGB | null {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result
-        ? {
-            r: parseInt(result[1], 16) / 255,
-            g: parseInt(result[2], 16) / 255,
-            b: parseInt(result[3], 16) / 255,
-        }
-        : null;
-}
 
 // ============================================================================
 // TIER 5: SYSTEM DEFAULTS
@@ -911,7 +952,7 @@ export async function resolveNode(
     attemptedTiers.push(1);
     result = await tryTier1ExactMatch(node, inventory);
     if (result) {
-        return recordAndReturn(result, node, startTime, attemptedTiers);
+        return recordAndReturn(result, node, inventory, startTime, attemptedTiers);
     }
 
     // Try Tier 2: Structural Match
@@ -924,7 +965,7 @@ export async function resolveNode(
             fallbackReason: FALLBACK_REASONS.tier2.noMatchingRole
         };
         result.metadata = metadata;
-        return recordAndReturn(result, node, startTime, attemptedTiers);
+        return recordAndReturn(result, node, inventory, startTime, attemptedTiers);
     }
 
     // Try Tier 3: Variable Construction
@@ -937,7 +978,7 @@ export async function resolveNode(
             fallbackReason: FALLBACK_REASONS.tier3.general
         };
         result.metadata = metadata;
-        return recordAndReturn(result, node, startTime, attemptedTiers);
+        return recordAndReturn(result, node, inventory, startTime, attemptedTiers);
     }
 
     // Try Tier 4: Primitive Fallback
@@ -950,7 +991,7 @@ export async function resolveNode(
             fallbackReason: FALLBACK_REASONS.tier4.general
         };
         result.metadata = metadata;
-        return recordAndReturn(result, node, startTime, attemptedTiers);
+        return recordAndReturn(result, node, inventory, startTime, attemptedTiers);
     }
 
     // Tier 5: System Defaults (always succeeds)
@@ -963,37 +1004,21 @@ export async function resolveNode(
     };
     result.metadata = metadata;
 
-    // ========================================================================
-    // CONFLICT RESOLUTION
-    // ========================================================================
-    // Intervene before returning to apply priority rules (Component > Preset > AI > System)
-    const conflicts = await resolveAllConflicts(node, result, inventory);
-
-    if (conflicts.length > 0) {
-        applyResolutionToInstructions(result.instructions, conflicts);
-
-        // Log conflicts to warnings for visibility
-        result.warnings.push(...conflicts.map(c =>
-            `Conflict: ${c.property} resolved to ${c.winner.source} (${c.winner.formattedValue})`
-        ));
-
-        // Add to metadata (casting to any to avoid strict type error if metadata is rigid)
-        // ideally we extend the type, but runtime this works
-        (result.metadata as any).conflicts = conflicts;
-    }
-
-    return recordAndReturn(result, node, startTime, attemptedTiers);
+    return recordAndReturn(result, node, inventory, startTime, attemptedTiers);
 }
 
 /**
- * Attach metadata and record statistics
+ * Attach metadata, run conflict resolution, and record statistics.
+ * Conflict resolution runs for ALL tiers (not just Tier 5) to enforce
+ * the priority hierarchy: Component > Preset > AI > System.
  */
-function recordAndReturn(
+async function recordAndReturn(
     result: ResolutionResult,
     node: RSNT_Node,
+    inventory: DesignSystemInventory,
     startTime: number,
     attemptedTiers: number[]
-): ResolutionResult {
+): Promise<ResolutionResult> {
     const timeMs = Date.now() - startTime;
 
     // Attach standard metadata
@@ -1005,6 +1030,20 @@ function recordAndReturn(
             timeMs,
         },
     };
+
+    // --- Conflict Resolution (runs for every successful tier) ---
+    try {
+        const conflicts = await resolveAllConflicts(node, finalResult, inventory);
+        if (conflicts.length > 0) {
+            applyResolutionToInstructions(finalResult.instructions, conflicts);
+            finalResult.warnings.push(...conflicts.map(c =>
+                `Conflict: ${c.property} resolved to ${c.winner.source} (${c.winner.formattedValue})`
+            ));
+            (finalResult.metadata as any).conflicts = conflicts;
+        }
+    } catch (e) {
+        console.warn('Conflict resolution failed for node', node.id, e);
+    }
 
     // Track detailed resolution log
     const detailedWarnings = finalResult.warnings.map(w =>

@@ -146,6 +146,42 @@ button.secondary:hover {
   border: 1px solid #ffa39e;
 }
 
+/* Render error / warning banners */
+.render-issue-banner {
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  text-align: left;
+}
+
+.render-issue-banner.error {
+  background: #fff1f0;
+  border: 1px solid #ffa39e;
+  color: #d32f2f;
+}
+
+.render-issue-banner.warning {
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  color: #d46b08;
+}
+
+.render-issue-header {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.render-issue-list {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.render-issue-list li {
+  margin-bottom: 2px;
+  line-height: 1.4;
+}
+
 details {
   border: 1px solid var(--border);
   border-radius: 4px;

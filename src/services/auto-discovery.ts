@@ -65,6 +65,10 @@ export interface DesignSystemGuidelines {
     };
     typography: {
         scale: Array<{ level: string; fontSize: number; usage: string }>;
+        sizes: number[]; // Deduplicated font sizes extracted from file variables
+    };
+    borderRadius: {
+        scale: number[]; // Extracted from file variables, or defaults
     };
     layout: {
         maxContentWidth: number;
@@ -167,48 +171,117 @@ function suggestSemanticRole(component: ComponentNode | ComponentSetNode): strin
  * Infer design system guidelines from variables
  */
 function inferGuidelines(variables: VariableInfo[]): DesignSystemGuidelines {
-    // Extract spacing scale from variables
+    // Helper: extract unique sorted numeric values from a filtered variable list.
+    // Prefers v.value (the actual token value); falls back to parsing a number from the name.
+    const extractNumericValues = (
+        vars: VariableInfo[],
+        minVal: number,
+        maxVal: number
+    ): number[] => {
+        const values = vars.map(v => {
+            if (typeof v.value === 'number') return v.value;
+            // Fallback: parse trailing number from name (e.g. "spacing/16" → 16)
+            const match = v.name.match(/(\d+(?:\.\d+)?)(?:\s*$|[^a-zA-Z]|$)/);
+            return match ? parseFloat(match[1]) : 0;
+        });
+        return [...new Set(values.filter(n => n >= minVal && n <= maxVal))].sort((a, b) => a - b);
+    };
+
+    // --- Spacing ---
     const spacingVars = variables.filter(v =>
-        v.name.toLowerCase().includes('spacing') ||
-        v.name.toLowerCase().includes('space') ||
-        v.name.toLowerCase().includes('gap') ||
-        v.name.toLowerCase().includes('padding')
+        v.resolvedType === 'FLOAT' && (
+            v.name.toLowerCase().includes('spacing') ||
+            v.name.toLowerCase().includes('space') ||
+            v.name.toLowerCase().includes('gap') ||
+            v.name.toLowerCase().includes('padding')
+        )
     );
+    const spacingScale = extractNumericValues(spacingVars, 1, 200);
 
-    const spacingScale = spacingVars
-        .map(v => {
-            const match = v.name.match(/\d+/);
-            return match ? parseFloat(match[0]) : 0;
-        })
-        .filter(n => n > 0 && n < 200)  // Reasonable spacing values
-        .sort((a, b) => a - b);
+    // --- Typography (font sizes) ---
+    const fontVars = variables.filter(v =>
+        v.resolvedType === 'FLOAT' && (
+            v.name.toLowerCase().includes('font-size') ||
+            v.name.toLowerCase().includes('fontsize') ||
+            v.name.toLowerCase().includes('font size') ||
+            v.name.toLowerCase().includes('text-size') ||
+            v.name.toLowerCase().includes('heading') ||
+            v.name.toLowerCase().includes('body') ||
+            v.name.toLowerCase().includes('caption') ||
+            v.name.toLowerCase().includes('display') ||
+            v.name.toLowerCase().includes('title') ||
+            v.name.toLowerCase().includes('label') ||
+            v.name.toLowerCase().includes('paragraph') ||
+            v.name.toLowerCase().includes('typography') ||
+            v.name.toLowerCase().match(/\btext\b/) !== null
+        )
+    );
+    const fontSizes = extractNumericValues(fontVars, 8, 120);
 
-    // Remove duplicates
-    const uniqueSpacing = [...new Set(spacingScale)];
+    // --- Border Radius ---
+    const radiusVars = variables.filter(v =>
+        v.resolvedType === 'FLOAT' && (
+            v.name.toLowerCase().includes('radius') ||
+            v.name.toLowerCase().includes('rounded') ||
+            v.name.toLowerCase().includes('corner')
+        )
+    );
+    const radiusScale = extractNumericValues(radiusVars, 0, 100);
 
-    // Default spacing scale if none found
-    const scale = uniqueSpacing.length > 0
-        ? uniqueSpacing
-        : [4, 8, 16, 24, 32, 48, 64];
+    // Build structured typography scale from extracted sizes (or defaults)
+    const typographyScale = fontSizes.length >= 2
+        ? buildTypographyScale(fontSizes)
+        : [
+            { level: 'h1', fontSize: 32, usage: 'Page titles' },
+            { level: 'h2', fontSize: 24, usage: 'Section headers' },
+            { level: 'body', fontSize: 16, usage: 'Body text' },
+            { level: 'small', fontSize: 14, usage: 'Captions' }
+        ];
 
     return {
         spacing: {
-            scale,
+            scale: spacingScale.length > 0 ? spacingScale : [4, 8, 16, 24, 32, 48, 64],
             default: 16
         },
         typography: {
-            scale: [
-                { level: 'h1', fontSize: 32, usage: 'Page titles' },
-                { level: 'h2', fontSize: 24, usage: 'Section headers' },
-                { level: 'body', fontSize: 16, usage: 'Body text' },
-                { level: 'small', fontSize: 14, usage: 'Captions' }
-            ]
+            scale: typographyScale,
+            sizes: fontSizes.length > 0 ? fontSizes : [12, 14, 16, 20, 24, 32, 40]
+        },
+        borderRadius: {
+            scale: radiusScale.length > 0 ? radiusScale : [4, 6, 8, 12, 16]
         },
         layout: {
             maxContentWidth: 1200,
             defaultPadding: 24
         }
     };
+}
+
+/**
+ * Map a sorted array of font sizes to labelled typography levels.
+ * Assigns labels bottom-up: smallest → small/caption, largest → h1/display.
+ */
+function buildTypographyScale(sizes: number[]): Array<{ level: string; fontSize: number; usage: string }> {
+    const labels = [
+        { level: 'caption', usage: 'Captions, fine print' },
+        { level: 'small', usage: 'Secondary labels' },
+        { level: 'body', usage: 'Body text' },
+        { level: 'h3', usage: 'Sub-section headers' },
+        { level: 'h2', usage: 'Section headers' },
+        { level: 'h1', usage: 'Page titles' },
+        { level: 'display', usage: 'Hero / display text' },
+    ];
+
+    // Spread sizes evenly across labels
+    const result: Array<{ level: string; fontSize: number; usage: string }> = [];
+    const step = Math.max(1, sizes.length / labels.length);
+
+    for (let i = 0; i < labels.length; i++) {
+        const idx = Math.min(Math.round(i * step), sizes.length - 1);
+        result.push({ ...labels[i], fontSize: sizes[idx] });
+    }
+
+    return result;
 }
 
 /**
@@ -221,15 +294,31 @@ async function classifyComponentsOrchestrator(
 ): Promise<ComponentInfo[]> {
 
     // Get API Key
+    // Get API Key
     try {
-        const apiKey = await figma.clientStorage.getAsync('gemini_api_key');
-        if (!apiKey) {
-            console.warn('Skipping AI classification: No API key found');
+        let apiKey = await figma.clientStorage.getAsync('gemini_api_key');
+
+        // Robust check: Ensure it's a non-empty string
+        if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '') {
+            console.warn('Skipping AI classification: No valid API key found', apiKey);
+            // Notify user via progress callback
+            onProgress?.('AI classification skipped (no API key)', 0);
             return components;
         }
-        classificationService.setApiKey(apiKey as string);
+
+        // SANITIZATION: Remove leading '#' if present (common paste error from .env)
+        apiKey = apiKey.trim().replace(/^#/, '');
+
+        if (apiKey === '') {
+            console.warn('Skipping AI classification: API key was only comments/whitespace');
+            return components;
+        }
+
+        classificationService.setApiKey(apiKey);
     } catch (e) {
         console.warn('Failed to retrieve API key for classification', e);
+        // Notify user via progress callback
+        onProgress?.('AI classification skipped (API key error)', 0);
         return components;
     }
 
@@ -317,13 +406,17 @@ async function classifyComponentsOrchestrator(
 
         let pCount = 0;
         for (const comp of componentsForPropertyAnalysis) {
-            const mappings = await propertyMappingService.analyzeComponentProperties(comp);
+            // Pass false for shouldSave to avoid writing to storage on every iteration
+            const mappings = await propertyMappingService.analyzeComponentProperties(comp, false);
             if (Object.keys(mappings).length > 0) {
                 comp.propertyMappings = mappings;
             }
-            pCount++;
             if (pCount % 5 === 0) onProgress?.('Analyzing properties...', 0.9 + (pCount / componentsForPropertyAnalysis.length * 0.1));
         }
+
+        // ✅ FIX 1: Save all property mappings to storage
+        await propertyMappingService.saveMappings();
+        console.log('Property mappings saved to storage');
     }
 
     return finalComponents;
@@ -423,6 +516,9 @@ function discoverComponents(cache: DiscoveryCache | null): { components: Compone
             Object.entries(props).forEach(([key, p]) => {
                 if (p.type === 'VARIANT') {
                     variantProps[key] = { values: p.values || [] };
+                } else if (p.type === 'BOOLEAN') {
+                    // Treat booleans as variants with True/False options so validVariantProperty can find them
+                    variantProps[key] = { values: ['True', 'False'] };
                 }
             });
             info.variantProperties = variantProps;
@@ -538,7 +634,6 @@ export async function getOrDiscoverInventory(
     }
 
     onProgress?.('Building inventory...', 90);
-    const endTime = Date.now();
     const inventory: DesignSystemInventory = {
         components: enrichedComponents,
         variables,

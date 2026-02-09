@@ -44,7 +44,7 @@ export class PropertyMappingService {
     /**
      * Analyze properties for a component using AI
      */
-    async analyzeComponentProperties(component: ComponentInfo): Promise<Record<string, PropertyAnalysis>> {
+    async analyzeComponentProperties(component: ComponentInfo, shouldSave: boolean = true): Promise<Record<string, PropertyAnalysis>> {
         const results: Record<string, PropertyAnalysis> = {};
 
         // Skip if no variant properties
@@ -57,32 +57,45 @@ export class PropertyMappingService {
 
         console.log(`Analyzing properties for ${component.name}...`);
 
+        // Collect properties to analyze
+        const propertiesToAnalyze: { name: string, values: string[] }[] = [];
         for (const [propName, propDef] of Object.entries(component.variantProperties)) {
-            // Skip boolean properties if we can detect them (usually "True/False" or "On/Off")
-            // But sometimes they are variants, so we might want to check
+            // We could skip known non-variants here, but let's let AI decide
+            if (propDef.values && propDef.values.length > 0) {
+                propertiesToAnalyze.push({ name: propName, values: propDef.values });
+            }
+        }
 
+        if (propertiesToAnalyze.length > 0) {
             try {
-                const analysis = await classificationService.analyzeProperty({
+                // Batch Analysis
+                const batchResults = await classificationService.analyzeComponentPropertiesBatch({
                     componentName: component.name,
-                    propertyName: propName,
-                    values: propDef.values
+                    properties: propertiesToAnalyze
                 });
 
-                // Filter low confidence mappings
-                const validMappings = analysis.valueMappings.filter((m: ValueMapping) => m.confidence >= 0.7);
+                // Process results
+                Object.entries(batchResults).forEach(([propName, analysis]) => {
+                    // Filter low confidence mappings
+                    const validMappings = analysis.valueMappings.filter((m: ValueMapping) => m.confidence >= 0.7);
 
-                if (validMappings.length > 0) {
-                    analysis.valueMappings = validMappings;
-                    results[propName] = analysis;
-                }
+                    if (validMappings.length > 0) {
+                        analysis.valueMappings = validMappings;
+                        results[propName] = analysis;
+                    }
+                });
+
             } catch (e) {
-                console.warn(`Failed to analyze property ${propName} for ${component.name}`, e);
+                console.warn(`Failed to analyze properties for ${component.name}`, e);
             }
         }
 
         // Cache results
         this.mappingCache.set(component.id, results);
-        await this.saveMappings();
+
+        if (shouldSave) {
+            await this.saveMappings();
+        }
 
         return results;
     }
@@ -104,10 +117,16 @@ export class PropertyMappingService {
         // Check lookup cache first
         if (this.semanticLookupCache.has(componentId)) {
             const semanticLookup = this.semanticLookupCache.get(componentId)!;
+            // LOGGING
+            console.log(`[PropertyMapping] Checking semantics for ${componentId}. Input:`, rsntProps);
+
             Object.entries(semanticLookup).forEach(([semanticKey, mapData]) => {
                 if (rsntProps[semanticKey]) {
                     const clientValue = mapData.valueMap[rsntProps[semanticKey]];
-                    if (clientValue) resultProps[mapData.compProp] = clientValue;
+                    if (clientValue) {
+                        resultProps[mapData.compProp] = clientValue;
+                        console.log(`[PropertyMapping] Mapped ${semanticKey}="${rsntProps[semanticKey]}" -> ${mapData.compProp}="${clientValue}"`);
+                    }
                 }
             });
             return resultProps;
@@ -341,11 +360,24 @@ export class PropertyMappingService {
         for (const [compProp, analysis] of Object.entries(mappings)) {
             let semanticKey = '';
 
-            switch (analysis.propertyType) {
-                case PropertyType.SEMANTIC_VARIANT: semanticKey = 'variant'; break;
-                case PropertyType.SEMANTIC_SIZE: semanticKey = 'size'; break;
-                case PropertyType.SEMANTIC_STATE: semanticKey = 'state'; break;
-                case PropertyType.SEMANTIC_STYLE: semanticKey = 'style'; break;
+            // 1. Name-based override (High Priority)
+            const propNameLower = compProp.toLowerCase();
+            if (propNameLower === 'variant' || propNameLower === 'type') {
+                semanticKey = 'variant';
+            } else if (propNameLower === 'size') {
+                semanticKey = 'size';
+            } else {
+                // 2. AI Classification Fallback
+                switch (analysis.propertyType) {
+                    case PropertyType.SEMANTIC_VARIANT: semanticKey = 'variant'; break;
+                    case PropertyType.SEMANTIC_SIZE: semanticKey = 'size'; break;
+                    case PropertyType.SEMANTIC_STATE: semanticKey = 'state'; break;
+                    case PropertyType.SEMANTIC_STYLE: semanticKey = 'style'; break;
+                    // Map Custom to variant if not claimed by name override
+                    case PropertyType.SEMANTIC_CUSTOM:
+                        if (!semanticLookup['variant']) semanticKey = 'variant';
+                        break;
+                }
             }
 
             if (semanticKey) {
@@ -354,10 +386,14 @@ export class PropertyMappingService {
                     valueMap[m.semanticValue] = m.clientValue;
                 });
 
-                semanticLookup[semanticKey] = {
-                    compProp,
-                    valueMap
-                };
+                // If key already exists, only overwrite if it's a "better" match? 
+                // For now, let's just use the first valid one or the name-based one.
+                if (!semanticLookup[semanticKey] || (propNameLower === semanticKey)) {
+                    semanticLookup[semanticKey] = {
+                        compProp,
+                        valueMap
+                    };
+                }
             }
         }
 
