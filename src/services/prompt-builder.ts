@@ -299,7 +299,7 @@ FILL vs HUG — the #1 layout mistake in Figma auto-layout:
 OUTPUT FORMAT:
 You MUST return a single valid JSON object with the following structure:
 {
-  "rsnt": RSNT_Node, // The complete RSNT node tree
+  "rsnt": RSNT_Node, // The complete RSNT node tree (with componentKey for library components)
   "reasoning": {
     "layoutChoice": "string", // Why this layout primitive was chosen
     "spacingChoice": "string", // Why this padding/gap values
@@ -352,9 +352,6 @@ ${JSON.stringify(fullExample, null, 2)}
     /**
      * Build complete prompt
      */
-    /**
-     * Build complete prompt
-     */
     build(
         intent: string,
         inventory: DesignSystemInventory,
@@ -363,27 +360,20 @@ ${JSON.stringify(fullExample, null, 2)}
         conversationContext?: string,
         selectionContext?: RSNT_Node
     ): string {
-        const complexity = this.analyzeIntentComplexity(intent);
+        // PROMPT FORK STRATEGY
+        // If we have a selection context, we engage "Refactoring Mode".
+        // This is a strict, structure-preserving mode that ignores standard design generation rules.
+        if (selectionContext) {
+            console.log('Engaging Refactoring Mode for modification');
+            return this.buildModificationPrompt(intent, inventory, selectedComponents, selectionContext);
+        }
 
+        // STANDARD GENERATION MODE
+        const complexity = this.analyzeIntentComplexity(intent);
         console.log(`Prompt complexity: ${complexity}`);
 
-        // If conversation context is present, we put it very early to frame the task as a modification
         let contextSection = '';
-
-        if (selectionContext) {
-            contextSection = `
-EXISTING SELECTION (User selected this frame in Figma and wants to modify it):
-\`\`\`json
-${JSON.stringify(selectionContext, null, 2)}
-\`\`\`
-
-MODIFICATION RULES:
-- Return a COMPLETE RSNT tree for the modified version. Include ALL elements — not just what changed. The output must be a self-contained design that can be rendered independently.
-- If the user's instruction does not mention changing something that exists in the selection, preserve it exactly. Do not remove, rename, or alter elements the user did not ask to change.
-- Keep all existing componentId values for COMPONENT_INSTANCE nodes unless the user explicitly asked to swap a component.
-- Apply your design intelligence to the modification: if the change breaks visual hierarchy or layout coherence, adjust surrounding elements to compensate.
-`;
-        } else if (conversationContext) {
+        if (conversationContext) {
             contextSection = `\n${conversationContext}\n\nIMPORTANT: YOU ARE MODIFYING AN EXISTING DESIGN. USE THE PROVIDED JSON AS YOUR STARTING POINT.`;
         }
 
@@ -428,6 +418,73 @@ MODIFICATION RULES:
         ];
 
         return sections.filter(s => s).join('\n');
+    }
+
+    /**
+     * Specialized Prompt for Refactoring / Modification
+     * Strips away "creative" instructions to force strict structure adherence.
+     */
+    private buildModificationPrompt(
+        intent: string,
+        inventory: DesignSystemInventory,
+        selectedComponents: ComponentInfo[],
+        selectionContext: any
+    ): string {
+        const targetId = selectionContext.targetNodeId;
+        const scopeId = selectionContext.nodeId;
+        const rsnt = selectionContext.rsnt;
+
+        // Determine focus: are we modifying the container itself or a child?
+        const isChildModification = targetId && targetId !== scopeId;
+
+        let focusInstruction = '';
+        if (isChildModification) {
+            focusInstruction = `
+FOCUS: The user identified the element with ID "${targetId}" as the target.
+You must find this node within the "rsnt" property of the input JSON and apply the requested changes to it.
+You MUST preserve the surrounding structure (siblings, parents) exactly as they are.`;
+        } else {
+            focusInstruction = `
+FOCUS: The user wants to modify this entire frame/container. 
+Apply the changes to the root parameters or layout as requested, preserving internal content unless asked to change.`;
+        }
+
+        return `
+SYSTEM: You are a UI Refactoring Engine. You are NOT a creative designer. 
+Your goal is to parse an existing UI structure (JSON), apply a specific transformation request, and return the modified structure.
+You MUST output the FULL valid JSON structure, effectively cloning the input and patching it.
+
+INPUT CONTEXT (The existing UI):
+\`\`\`json
+${JSON.stringify(selectionContext, null, 2)}
+\`\`\`
+
+USER REQUEST: "${intent}"
+
+${this.buildContext(inventory, selectedComponents)}
+
+STRICT REFACTORING RULES:
+1.  **NO ORPHANS**: You must return the COMPLETE root object provided in the INPUT CONTEXT. Do not return just the modified child.
+2.  **PRESERVE ALL CHILDREN**: You MUST preserve every single child and sibling in the hierarchy. If the input JSON has 10 children, the output JSON must also have 10 children (or more if you added some). NEVER omit children.
+3.  **PRESERVE STRUCTURE**: Do not change the hierarchy, order, or nesting of elements unless explicitly asked (e.g., "wrap this in a frame").
+4.  **PRESERVE IDS**: Keep "componentId" and "id" values for all nodes you do not modify.
+5.  **EXACT CLONE**: Every text node, image, and layout property not explicitly mentioned in the request must remain UNTOUCHED.
+6.  **VALID RSNT**: The output must be valid RSNT JSON.
+7.  **PRESERVE KEYS**: You must preserve the "componentKey" property if it exists. This is critical for library components.
+8.  **VARIANT MODIFICATION**: To change a component's appearance (e.g., from Primary to Destructive), modify its "properties" values based on the "variantProperties" or "properties" defined in the COMPONENT INVENTORY for that component. Do not guess property names; use exact matches from the inventory.
+9.  **SEMANTIC NAMES**: Always prefer using the semantic property names (e.g., "variant", "size", "state") if they map to the component's variant properties.
+10. **STRICT ID PRESERVATION**: NEVER change the "componentId" or "componentKey" of an existing instance unless your intent is to swap it for a completely different component type. To change a variant, ONLY modify the "properties" field. Invented or hallucinated IDs will cause the design to fail.
+11. **TARGET FOCUS**: Your modifications should be focused on the "targetId" node, but you must return the entire structure of the "scopeId" node (the full frame). Do not omit existing children.
+12. **OMIT STYLE FOR VARIANTS**: If you change a variant property (rule 8), you SHOULD OMIT the \`fills\`, \`strokes\`, \`effects\`, \`padding\`, \`cornerRadius\`, and \`itemSpacing\` properties for that instance node. This allows the component's variant defaults to take effect. Only include these styles if you explicitly intend to override the component's internal design system values.
+
+${focusInstruction}
+
+${this.buildOutputSchema()}
+
+${this.buildDesignTokenConstraints(inventory.guidelines)}
+
+Now, perform the refactoring. Output the COMPLETE modified JSON object only.
+`;
     }
 }
 

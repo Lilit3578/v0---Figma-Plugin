@@ -64,6 +64,10 @@ export async function renderRSNT(
             if ('constraints' in figmaNode) applyConstraints(figmaNode, rsnt);
             if ('layoutMode' in figmaNode) applyLayout(figmaNode, rsnt);
 
+            // Apply new high-fidelity properties
+            if ('effects' in figmaNode) applyEffects(figmaNode, rsnt);
+            if ('opacity' in figmaNode) applyLayerProps(figmaNode, rsnt);
+
             // ATTACH TO PARENT
             attachToParent(figmaNode, flatParent, parent, warnings, rsnt.id);
 
@@ -128,15 +132,78 @@ function flattenRSNT(root: RSNT_Node): FlatNode[] {
 }
 
 async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentInstructions['overrides']): Promise<InstanceNode> {
-    if (!node.componentId) {
-        throw createExecutionError(ErrorCode.MISSING_REQUIRED_PROPERTY, { node: node.id }, 'Component instance missing componentId');
+    let component: ComponentNode | ComponentSetNode | null = null;
+
+    if (node.componentId) {
+        component = figma.getNodeById(node.componentId) as ComponentNode | ComponentSetNode;
     }
-    const component = figma.getNodeById(node.componentId);
+
+    // Fallback: If component not found by ID, try finding by key or name
     if (!component) {
-        throw createResolutionError(ErrorCode.COMPONENT_NOT_FOUND, { componentId: node.componentId });
+        // Strategy 1: Component Key Lookup (Robust for Library Components)
+        if (node.componentKey) {
+            try {
+                console.log(`Attempting to import component by key: ${node.componentKey}`);
+                // Use importComponentByKeyAsync to fetch from library
+                // This works even if the master component isn't in the current file
+                component = await figma.importComponentByKeyAsync(node.componentKey);
+                console.log(`Recovered component via Key Lookup: ${component.name} (ID: ${component.id})`);
+            } catch (e) {
+                console.warn(`Failed to import component by key "${node.componentKey}":`, e);
+            }
+        }
+
+        // Strategy 2: Fallback search by name (for local components or if key fails)
+        if (!component && node.name) {
+            console.warn(`Component ID "${node.componentId}" not found. Attempting fallback search by name: "${node.name}"`);
+
+            // Exact Name Match
+            let candidates = figma.root.findAll(n => (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') && n.name === node.name);
+
+            // Case-Insensitive Match
+            if (candidates.length === 0) {
+                const lowerName = node.name.toLowerCase();
+                candidates = figma.root.findAll(n => (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') && n.name.toLowerCase() === lowerName);
+            }
+
+            // Cleaned Partial Match
+            if (candidates.length === 0) {
+                const cleanName = node.name.split('/').pop()?.trim().toLowerCase();
+                if (cleanName) {
+                    candidates = figma.root.findAll(n => {
+                        if (n.type !== 'COMPONENT' && n.type !== 'COMPONENT_SET') return false;
+                        const nName = n.name.toLowerCase();
+                        return nName === cleanName || nName.endsWith(`/${cleanName}`) || nName.includes(cleanName);
+                    });
+                }
+            }
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => a.name.length - b.name.length);
+                component = candidates[0] as ComponentNode | ComponentSetNode;
+                console.log(`Recovered component "${node.name}" (ID: ${component.id}) via name fallback.`);
+
+                // Constructive update: if we found it by name/key, update the node ID so subsequent steps work
+                if (node.componentId !== component.id) {
+                    // We can't mutate readonly props easily if frozen, but RSNT is usually a POJO
+                    node.componentId = component.id;
+                }
+            } else {
+                console.warn(`Fallback search failed for "${node.name}".`);
+            }
+        }
     }
-    if (component.type !== 'COMPONENT' && component.type !== 'COMPONENT_SET') {
-        throw createExecutionError(ErrorCode.NODE_CREATION_FAILED, { componentId: node.componentId, type: component.type }, `Node ${node.componentId} is not a component`);
+
+    if (!component) {
+        throw createResolutionError(ErrorCode.COMPONENT_NOT_FOUND, { componentId: node.componentId, name: node.name });
+    }
+
+    console.log(`[Renderer] Selected component: "${component.name}"`, component.componentPropertyDefinitions);
+
+    // Explicit type check to satisfy compiler
+    const type = component.type;
+    if (type !== 'COMPONENT' && type !== 'COMPONENT_SET') {
+        throw createExecutionError(ErrorCode.NODE_CREATION_FAILED, { componentId: node.componentId, type }, `Node ${node.componentId} is not a component`);
     }
     const instance = component.type === 'COMPONENT_SET'
         ? (component as ComponentSetNode).defaultVariant.createInstance()
@@ -162,30 +229,38 @@ async function renderComponentInstance(node: RSNT_Node, overrides?: ComponentIns
             // Map semantic property names (e.g. variant: "primary") to the actual
             // component property names (e.g. Emphasis: "High") using the mapping
             // that was built during discovery.
-            const mapped = propertyMappingService.applyMappingWithWarnings(node.componentId, propsForMapping);
+            if (Object.keys(propsForMapping).length > 0) {
+                // Apply semantic mapping
+                const mapped = propertyMappingService.applyMappingWithWarnings(component.id, propsForMapping);
 
-            if (mapped.warnings.length > 0) {
-                console.warn(`Property mapping for "${node.name || node.id}":`, mapped.warnings);
-            }
+                if (mapped.warnings.length > 0) {
+                    console.warn(`Property mapping for "${node.name || node.id}":`, mapped.warnings);
+                }
 
-            // Use mapped properties if the service produced any; otherwise fall back
-            // to raw properties (handles cases where the AI used the actual prop names).
-            const propsToSet = Object.keys(mapped.componentProperties).length > 0
-                ? mapped.componentProperties
-                : propsForMapping;
+                // MERGE: Start with original properties and overwrite with mapped ones.
+                // This preserves properties like "mode" that AI provided but mapping skipped.
+                // We also include "skippedProps" from the mapping result explicitly if they weren't in result.
+                const propsToSet = { ...propsForMapping, ...mapped.componentProperties };
 
-            if (Object.keys(propsToSet).length > 0) {
-                // Resolve against the component's actual property definitions.
-                // The AI frequently outputs generic semantic names (e.g. "variant")
-                // instead of the real property names (e.g. "Style"). This step
-                // matches by VALUE: if the AI says { variant: "primary" } and the
-                // component has a "Style" property whose variantOptions include
-                // "primary", it resolves to { Style: "primary" }.
+                console.log(`[Renderer] Final properties for "${node.name}":`, propsToSet);
+
                 const resolved = resolvePropsAgainstDefinitions(
                     component as ComponentNode | ComponentSetNode, propsToSet
                 );
+
                 if (Object.keys(resolved).length > 0) {
-                    instance.setProperties(resolved);
+                    console.log(`[Renderer] Applying properties to "${node.name}":`, resolved);
+                    try {
+                        instance.setProperties(resolved);
+                    } catch (e) {
+                        console.error(`[Renderer] setProperties failed for "${node.name}":`, e);
+                        // Fallback: try setting them one by one if the batch fails
+                        for (const [k, v] of Object.entries(resolved)) {
+                            try { instance.setProperties({ [k]: v }); } catch (inner) { /* ignore */ }
+                        }
+                    }
+                } else {
+                    console.warn(`[Renderer] No properties resolved for "${node.name}" from input:`, propsToSet);
                 }
             }
 
@@ -280,9 +355,7 @@ async function renderText(node: RSNT_Node): Promise<TextNode> {
     return text;
 }
 
-/**
- * Modular Property Appliers
- */
+// Modular Property Appliers
 
 function applyFills(figmaNode: any, rsnt: RSNT_Node, warnings: RenderError[], errors: RenderError[]) {
     if (!rsnt.fills) return;
@@ -295,7 +368,11 @@ function applyFills(figmaNode: any, rsnt: RSNT_Node, warnings: RenderError[], er
                 warnings.push(createRenderErrorUI(createExecutionError(ErrorCode.PROPERTY_BINDING_FAILED), rsnt.id, 'warning', 'Invalid color values'));
                 continue;
             }
-            fills.push({ type: 'SOLID', color: normalizeColor(fill.color) });
+            fills.push({
+                type: 'SOLID',
+                color: normalizeColor(fill.color),
+                opacity: (fill as any).opacity !== undefined ? (fill as any).opacity : 1
+            });
         } else if (fill.type === 'VARIABLE' && fill.variableId) {
             // Bind the variable so the fill updates when the design token changes
             const variable = figma.variables.getVariableById(fill.variableId);
@@ -323,13 +400,19 @@ function applyFills(figmaNode: any, rsnt: RSNT_Node, warnings: RenderError[], er
 }
 
 function applyStrokes(figmaNode: any, rsnt: RSNT_Node, warnings: RenderError[], errors: RenderError[]) {
-    if (!rsnt.strokes) return;
+    if (!rsnt.strokes || rsnt.strokes.length === 0) {
+        if ('strokes' in figmaNode) figmaNode.strokes = [];
+        return;
+    }
     figmaNode.strokes = rsnt.strokes.map(stroke => ({
         type: 'SOLID',
-        color: normalizeColor(stroke.color)
+        color: normalizeColor(stroke.color),
+        opacity: stroke.opacity !== undefined ? stroke.opacity : 1
     }));
+
     if ('strokeWeight' in figmaNode) {
-        figmaNode.strokeWeight = (rsnt.strokes[0] as any).weight || 1;
+        // Use node-level strokeWeight if present, fallback to first stroke's weight, then default to 1
+        figmaNode.strokeWeight = (rsnt.strokeWeight as any) || (rsnt.strokes[0] as any).weight || 1;
     }
 }
 
@@ -341,10 +424,6 @@ function applyCornerRadius(figmaNode: any, rsnt: RSNT_Node) {
         const value = resolveVariable(rsnt.cornerRadius.variableId, 'FLOAT');
         if (typeof value === 'number') figmaNode.cornerRadius = value;
     }
-}
-
-function applyConstraints(figmaNode: any, rsnt: RSNT_Node) {
-    if (rsnt.constraints) figmaNode.constraints = rsnt.constraints;
 }
 
 /**
@@ -361,32 +440,95 @@ function resolvePropsAgainstDefinitions(
     const defs = component.componentPropertyDefinitions;
     const resolved: Record<string, string> = {};
 
-    for (const [key, value] of Object.entries(props)) {
-        // Direct match — AI used the correct property name
-        if (defs[key]) {
-            resolved[key] = value;
-            continue;
-        }
+    // 1. Map definition keys to lowercase for case-insensitive lookup
+    const defKeysLower: Record<string, string> = {};
+    Object.keys(defs).forEach(k => { defKeysLower[k.toLowerCase()] = k; });
 
-        // Value-based match — find the VARIANT property that accepts this value
-        let matched = false;
-        for (const [propName, propDef] of Object.entries(defs)) {
-            if (propDef.type === 'VARIANT' && propDef.variantOptions?.includes(value)) {
-                if (!resolved[propName]) {
-                    resolved[propName] = value;
-                    matched = true;
-                    console.log(`  Resolved property "${key}: ${value}" → "${propName}: ${value}"`);
+    for (const [rawKey, rawValue] of Object.entries(props)) {
+        const key = rawKey.toLowerCase();
+        const value = rawValue.toLowerCase();
+
+        // Strategy A: Key Match (Case-Insensitive)
+        const realKey = defKeysLower[key];
+        if (realKey) {
+            const propDef = defs[realKey];
+
+            // For variants, we also need to match the VALUE case-insensitively
+            if (propDef.type === 'VARIANT' && propDef.variantOptions) {
+                const realValue = propDef.variantOptions.find(opt => opt.toLowerCase() === value);
+                if (realValue) {
+                    resolved[realKey] = realValue;
+                    continue;
                 }
-                break;
+            } else {
+                // For non-variants, just direct set
+                resolved[realKey] = rawValue;
+                continue;
             }
         }
 
-        if (!matched) {
-            console.warn(`  Could not resolve property "${key}: ${value}" — no matching definition`);
+        // Strategy B: Value-based match — find ANY VARIANT property that accepts this value
+        let matchedByValue = false;
+        for (const [propName, propDef] of Object.entries(defs)) {
+            if (propDef.type === 'VARIANT' && propDef.variantOptions) {
+                const realValue = propDef.variantOptions.find(opt => opt.toLowerCase() === value);
+                if (realValue) {
+                    if (!resolved[propName]) {
+                        resolved[propName] = realValue;
+                        matchedByValue = true;
+                        console.log(`  Resolved property "${rawKey}: ${rawValue}" → "${propName}: ${realValue}" (Value matching)`);
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (!matchedByValue && !realKey) {
+            console.warn(`  Could not resolve property "${rawKey}: ${rawValue}" — no matching definition`);
         }
     }
 
     return resolved;
+}
+
+function applyConstraints(figmaNode: any, rsnt: RSNT_Node) {
+    if (rsnt.constraints) {
+        figmaNode.constraints = rsnt.constraints;
+    } else if (rsnt.layoutMode === 'NONE' && (rsnt.width || rsnt.height)) {
+        // Default to TOP-LEFT for fixed frames if no constraints provided
+        figmaNode.constraints = { horizontal: 'MIN', vertical: 'MIN' };
+    }
+}
+
+function applyLayerProps(figmaNode: any, rsnt: RSNT_Node) {
+    if (rsnt.opacity !== undefined) figmaNode.opacity = rsnt.opacity;
+    if (rsnt.blendMode) figmaNode.blendMode = rsnt.blendMode;
+    if (rsnt.visible !== undefined) figmaNode.visible = rsnt.visible;
+}
+
+function applyEffects(figmaNode: any, rsnt: RSNT_Node) {
+    if (rsnt.effects && rsnt.effects.length > 0) {
+        figmaNode.effects = rsnt.effects.map(effect => {
+            // Reconstruct effect object based on type to ensure Figma accepts it
+            if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
+                return {
+                    type: effect.type,
+                    color: effect.color || { r: 0, g: 0, b: 0, a: 0.25 },
+                    offset: effect.offset || { x: 0, y: 4 },
+                    radius: effect.radius || 4,
+                    spread: effect.spread || 0,
+                    visible: effect.visible !== undefined ? effect.visible : true,
+                    blendMode: effect.blendMode || 'NORMAL'
+                };
+            } else {
+                return {
+                    type: effect.type,
+                    radius: effect.radius || 4,
+                    visible: effect.visible !== undefined ? effect.visible : true
+                };
+            }
+        });
+    }
 }
 
 // CSS-to-Figma alignment value mapping. The AI sometimes outputs CSS flexbox
@@ -737,3 +879,5 @@ export async function renderWithResolution(
         warnings
     };
 }
+// The function `resolvePropsAgainstDefinitions` was not found in the provided document.
+// If you intended to add this function, please provide its full content.

@@ -22,24 +22,28 @@ const USE_MULTI_STEP_REASONING = true;
  * Helper to validate the parsed JSON specifically for RSNT structure
  */
 function validateRSNTResponse(parsed: any): any {
+    console.log('[AIService] Validating RSNT Response:', JSON.stringify(parsed).substring(0, 200) + '...');
+
     // Validate structure
     if (!parsed.rsnt) {
         // Fallback: Maybe the root object IS the rsnt if the AI forgot the wrapper?
         if (parsed.id && parsed.type) {
-            console.warn('Response missing "rsnt" wrapper, assuming root is RSNT');
+            console.warn('[AIService] Response missing "rsnt" wrapper, assuming root is RSNT');
             return { rsnt: parsed };
         }
+        console.error('[AIService] Validation Failed: Missing "rsnt" property', parsed);
         throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { parsed }, 'Response missing "rsnt" property');
     }
 
     // Check if rsnt is incorrectly an array
     if (Array.isArray(parsed.rsnt)) {
-        console.error('AI returned rsnt as array instead of object:', parsed.rsnt);
+        console.error('[AIService] Validation Failed: RSNT is an array:', parsed.rsnt);
         throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { rsnt: parsed.rsnt }, 'Invalid response: "rsnt" must be an object, not an array.');
     }
 
     // Check if rsnt is an object
     if (typeof parsed.rsnt !== 'object' || parsed.rsnt === null) {
+        console.error('[AIService] Validation Failed: RSNT is not an object:', parsed.rsnt);
         throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { rsnt: parsed.rsnt }, 'Invalid response: "rsnt" must be an object');
     }
 
@@ -109,7 +113,14 @@ export async function generateRSNT(
 
             return result.rsnt;
         } catch (error: any) {
-            console.warn('Multi-step generation failed, falling back to single-shot:', error.message);
+            // CRITICAL: If this is a Rate Limit error, DO NOT FALLBACK to single-shot.
+            // We must let the RateLimiter pause and retry the high-quality multi-step pipeline.
+            if (error.message?.includes('429') || error.message?.includes('Rate Limit') || error.message?.includes('AI_API_RETRY')) {
+                console.warn('Multi-step reasoning hit Rate Limit. Propagating error to trigger Backoff/Retry.');
+                throw error;
+            }
+
+            console.warn('Multi-step generation failed (non-rate-limit), falling back to single-shot:', error.message);
             // Fall through to single-shot generation
         }
     }
@@ -152,7 +163,8 @@ export async function generateRSNT(
     // 4. Call AI
     let response;
     try {
-        response = await globalRateLimiter.executeWithRetry(async () => {
+        // Use HIGH priority for user requests
+        response = await globalRateLimiter.throttle(async () => {
             const res = await fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
                 {
@@ -175,15 +187,16 @@ export async function generateRSNT(
             // fetch doesn't throw on these, so we must check status and throw to trigger RateLimiter retry
             if (res.status === 429 || res.status >= 500) {
                 const text = await res.text();
+                // Include retryDelay in error message if possible to help RateLimiter
                 throw new Error(`AI_API_RETRY: ${res.status} ${text}`);
             }
 
             return res;
-        });
+        }, 0 /* QueuePriority.HIGH */);
     } catch (error: any) {
-        // If we get here, retries are exhausted or it's a network error
+        // If we get here, retries are exhausted (max 5)
         if (error.message?.includes('429') || error.message?.includes('Rate Limit')) {
-            throw createAIError(ErrorCode.API_REQUEST_FAILED, { status: 429, originalError: error.message }, 'RATE_LIMIT: Too many requests (retries exhausted).');
+            throw createAIError(ErrorCode.API_REQUEST_FAILED, { status: 429, originalError: error.message }, 'RATE_LIMIT: Too many requests. Please wait a moment.');
         }
 
         // Re-throw as AI error
@@ -354,7 +367,7 @@ export async function generateRSNT(
 export async function makeAICall(prompt: string, systemPrompt: string, apiKey: string): Promise<string> {
     const fullPrompt = `${systemPrompt}\n\n${prompt}`;
 
-    const response = await globalRateLimiter.executeWithRetry(async () => {
+    const response = await globalRateLimiter.throttle(async () => {
         const res = await fetch(
             `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`,
             {
@@ -366,7 +379,7 @@ export async function makeAICall(prompt: string, systemPrompt: string, apiKey: s
                     }],
                     generationConfig: {
                         temperature: 0.3,
-                        maxOutputTokens: 4096,
+                        maxOutputTokens: 8192,
                         responseMimeType: "application/json"
                     }
                 })
@@ -379,7 +392,7 @@ export async function makeAICall(prompt: string, systemPrompt: string, apiKey: s
         }
 
         return res;
-    });
+    }, 0 /* QueuePriority.HIGH */);
 
     if (!response.ok) {
         throw new Error(`AI call failed: ${response.status}`);
@@ -401,14 +414,6 @@ export async function makeAICall(prompt: string, systemPrompt: string, apiKey: s
     return text;
 }
 
-/**
- * Generate RSNT using multi-step reasoning (Antigravity approach)
- *
- * Steps:
- * 1. Parse intent into structured requirements
- * 2. Make explicit design decisions
- * 3. Generate RSNT from decisions
- */
 export async function generateRSNTWithDecisions(
     userIntent: string,
     apiKey: string,

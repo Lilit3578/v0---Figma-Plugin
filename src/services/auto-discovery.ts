@@ -14,6 +14,7 @@ import { DiscoveryCache } from '../types/cache'; // Import DiscoveryCache type
 
 export interface ComponentInfo {
     id: string;
+    key: string;
     name: string;
     type: 'COMPONENT' | 'COMPONENT_SET';
     description?: string;
@@ -440,6 +441,8 @@ function discoverComponents(cache: DiscoveryCache | null): { components: Compone
     let newlyScannedCount = 0;
 
     const components = allNodes.map(component => {
+        console.log(`[Discovery] Analyzing component: "${component.name}" (ID: ${component.id}, Type: ${component.type})`);
+
         // INCREMENTAL CHECK:
         // If we have cache and component is not modified, use cached version
         if (cache && !cacheService.isComponentModified(component.id, cache)) {
@@ -465,6 +468,7 @@ function discoverComponents(cache: DiscoveryCache | null): { components: Compone
 
         const info: ComponentInfo = {
             id: component.id,
+            key: component.key,
             name: component.name,
             type: component.type as 'COMPONENT' | 'COMPONENT_SET',
             description: component.description || undefined,
@@ -484,6 +488,7 @@ function discoverComponents(cache: DiscoveryCache | null): { components: Compone
                 if (key.startsWith('_')) return;
 
                 if (def.type === 'VARIANT') {
+                    console.log(`[Discovery]   Variant Prop: "${key}", Values:`, def.variantOptions);
                     props[key] = {
                         type: 'VARIANT',
                         values: def.variantOptions || [],

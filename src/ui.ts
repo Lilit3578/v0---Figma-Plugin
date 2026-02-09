@@ -269,7 +269,11 @@ if (generateBtn) {
                 });
 
                 if (selectionContext) {
-                    console.log('Using selection context:', selectionContext);
+                    console.log('Using selection context:', {
+                        scopeId: selectionContext.nodeId,
+                        targetId: selectionContext.targetNodeId,
+                        hasRSNT: !!selectionContext.rsnt
+                    });
                 }
 
                 // Always use Antigravity pipeline (multi-step reasoning)
@@ -812,13 +816,18 @@ function showUndoToast(message: string) {
 // ============================================================================
 
 // Dialog close handlers
-closeAntigravityBtn.addEventListener('click', () => {
-    antigravityDialog.style.display = 'none';
-});
+// Dialog close handlers
+if (closeAntigravityBtn) {
+    closeAntigravityBtn.addEventListener('click', () => {
+        if (antigravityDialog) antigravityDialog.style.display = 'none';
+    });
+}
 
-dismissAntigravityBtn.addEventListener('click', () => {
-    antigravityDialog.style.display = 'none';
-});
+if (dismissAntigravityBtn) {
+    dismissAntigravityBtn.addEventListener('click', () => {
+        if (antigravityDialog) antigravityDialog.style.display = 'none';
+    });
+}
 
 interface AntigravityReasoning {
     intentSummary: string;

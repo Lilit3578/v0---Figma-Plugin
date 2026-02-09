@@ -32,10 +32,10 @@ import { DesignSystemInventory } from './auto-discovery';
 import { IntentParser, DesignIntent, createIntentParser } from './intent-parser';
 import { DecisionEngine, DesignDecision, createDecisionEngine } from './decision-engine';
 import { RSNTBuilder, BuildResult, createRSNTBuilder } from './rsnt-builder';
-
-// ============================================================================
-// TYPES
-// ============================================================================
+import { promptBuilder } from './prompt-builder';
+import { componentSelector } from './component-selector';
+import { selectRelevantExamples } from './example-library';
+import { extractJSON } from '../utils/json-utils';
 
 export interface PipelineResult {
     success: boolean;
@@ -47,7 +47,11 @@ export interface PipelineResult {
     };
     totalTimeMs: number;
     reasoning: PipelineReasoning;
+    originalPrompt?: string;      // Added for context tracking
+    usedContext?: boolean;        // Track if we used selection context
+    error?: string;
 }
+
 
 export interface PhaseResult<T> {
     success: boolean;
@@ -100,7 +104,11 @@ export class AntigravityPipeline {
     /**
      * Run the complete pipeline
      */
-    async run(userPrompt: string): Promise<PipelineResult> {
+    async run(userPrompt: string, selectionContext?: RSNT_Node): Promise<PipelineResult> {
+        if (selectionContext) {
+            return this.runRefactoring(userPrompt, selectionContext);
+        }
+
         const startTime = Date.now();
         const warnings: string[] = [];
 
@@ -177,8 +185,101 @@ export class AntigravityPipeline {
                 build: buildResult
             },
             totalTimeMs: Date.now() - startTime,
-            reasoning
+            reasoning,
+            originalPrompt: userPrompt,
+            usedContext: false
         };
+    }
+
+    /**
+     * Run refactoring/modification pipeline
+     */
+    private async runRefactoring(userPrompt: string, selectionContext: any): Promise<PipelineResult> {
+        const startTime = Date.now();
+        this.progress('Refactoring', 'Generating modification...');
+
+        try {
+            // 1. Select components (for context)
+            const selection = componentSelector.selectComponents(userPrompt, this.inventory, 10);
+            const examples = selectRelevantExamples(userPrompt, 2);
+
+            // 2. Build prompt
+            const prompt = promptBuilder.build(
+                userPrompt,
+                this.inventory,
+                selection.selected,
+                examples,
+                undefined,
+                selectionContext
+            );
+
+            this.log(`Refactoring prompt length: ${prompt.length}`);
+            if (this.options.verbose) {
+                console.log('[Antigravity] Generated Refactoring Prompt:', prompt);
+            }
+
+            // 3. Call AI
+            // System prompt is empty as PromptBuilder includes it
+            const aiResponse = await this.aiCall(prompt, "");
+            console.log('[Antigravity] Raw refactor response:', aiResponse);
+            const parsed = extractJSON(aiResponse);
+
+            // Validate response structure
+            const rsnt = parsed.rsnt || parsed;
+            console.log('[Antigravity] Extracted RSNT for rendering:', rsnt);
+
+            // Log properties of component instances in the output
+            if (rsnt && rsnt.children) {
+                rsnt.children.forEach((c: any) => {
+                    if (c.type === 'COMPONENT_INSTANCE') {
+                        console.log(`[Antigravity]   - Component Instance "${c.name}": componentId="${c.componentId}", properties=`, c.properties);
+                    }
+                });
+            }
+
+            return {
+                success: true,
+                rsnt,
+                phases: {
+                    intent: { success: true, data: { type: 'refactor', components: [], confidence: 1.0, reasoning: 'Modification request', constraints: { platform: 'web' }, layout: { direction: 'vertical', alignment: 'start', spacing: 'normal' } } as any, timeMs: 0 },
+                    decision: { success: true, data: { components: [], layout: {} as any, styling: {} as any, hierarchy: {} as any, overallConfidence: 1.0, designRationale: 'Refactoring existing content' } as any, timeMs: 0 },
+                    build: { success: true, data: { rsnt, warnings: [], buildLog: [] }, timeMs: Date.now() - startTime }
+                },
+                totalTimeMs: Date.now() - startTime,
+                reasoning: {
+                    intentSummary: 'Refactoring request',
+                    componentSelections: [],
+                    layoutRationale: 'Existing layout',
+                    overallConfidence: 1.0,
+                    warnings: []
+                },
+                originalPrompt: userPrompt,
+                usedContext: true
+            };
+
+        } catch (error: any) {
+            console.error('Refactoring failed:', error);
+            return {
+                success: false,
+                rsnt: null,
+                phases: {
+                    intent: { success: false, data: null, timeMs: 0, error: 'Skipped' },
+                    decision: { success: false, data: null, timeMs: 0, error: 'Skipped' },
+                    build: { success: false, data: null, timeMs: Date.now() - startTime, error: error.message }
+                },
+                totalTimeMs: Date.now() - startTime,
+                reasoning: {
+                    intentSummary: 'Failed',
+                    componentSelections: [],
+                    layoutRationale: 'Failed',
+                    overallConfidence: 0,
+                    warnings: [error.message]
+                },
+                originalPrompt: userPrompt,
+                usedContext: true,
+                error: error.message
+            };
+        }
     }
 
     /**

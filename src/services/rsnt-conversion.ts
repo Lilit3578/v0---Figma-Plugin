@@ -52,18 +52,62 @@ export const rsntConversionService = {
                 rsnt.height = frameParams.height;
             }
 
-            // Styling
+            // Advanced Styling
             rsnt.fills = this.extractFills(frameParams.fills);
-            rsnt.strokes = this.extractStrokes(frameParams.strokes); // Requires adding extractStrokes if needed
+            rsnt.strokes = this.extractStrokes(frameParams); // Pass the node to extract strokes and their weights
             if (typeof frameParams.cornerRadius === 'number') {
                 rsnt.cornerRadius = frameParams.cornerRadius;
+            }
+            if (typeof frameParams.strokeWeight === 'number') {
+                rsnt.strokeWeight = frameParams.strokeWeight;
+            }
+
+            // Extract Effects (Shadows, Blurs)
+            rsnt.effects = this.extractEffects(frameParams.effects);
+
+            // Extract Layer Properties
+            rsnt.opacity = frameParams.opacity;
+            rsnt.blendMode = frameParams.blendMode as any;
+            rsnt.visible = frameParams.visible;
+
+            // Extract Constraints (for non-auto-layout)
+            if (rsnt.layoutMode === 'NONE') {
+                rsnt.constraints = {
+                    horizontal: frameParams.constraints.horizontal,
+                    vertical: frameParams.constraints.vertical
+                };
             }
 
             // Instance specifics
             if (node.type === 'INSTANCE') {
                 rsnt.type = 'COMPONENT_INSTANCE';
-                rsnt.componentId = (node as InstanceNode).mainComponent?.id;
-                // Properties could be extracted here if needed for exact variant matching
+                const instance = node as InstanceNode;
+                const mainComponent = instance.mainComponent;
+
+                try {
+                    // Extract component properties
+                    const rsntProps: Record<string, string> = {};
+                    console.log(`[Extraction] Properties for instance "${instance.name}":`, instance.componentProperties);
+                    for (const [key, value] of Object.entries(instance.componentProperties)) {
+                        // Normalize the key to be more AI-friendly
+                        const normalizedKey = key.split('#')[0].trim().toLowerCase();
+                        rsntProps[normalizedKey] = String(value.value);
+                    }
+                    rsnt.properties = rsntProps;
+                    console.log(`[Extraction]   - Normalized props:`, rsntProps);
+                } catch (e) {
+                    console.warn(`Failed to extract properties for ${instance.name}`, e);
+                }
+
+                // If the main component is a variant, use the parent (Component Set) as the componentId
+                // because that's what we discovered and mapped.
+                if (mainComponent?.parent?.type === 'COMPONENT_SET') {
+                    rsnt.componentId = mainComponent.parent.id;
+                    rsnt.componentKey = mainComponent.parent.key;
+                } else {
+                    rsnt.componentId = mainComponent?.id;
+                    rsnt.componentKey = mainComponent?.key;
+                }
             }
 
             // Recursion for children (unless it's an instance, which we treat as atomic for RSNT usually)
@@ -77,6 +121,19 @@ export const rsntConversionService = {
             rsnt.characters = text.characters;
             rsnt.fontSize = text.fontSize as number; // Assuming single font size
             // Font Name extraction could go here
+            // Extract Layer Properties for Text too
+            rsnt.opacity = text.opacity;
+            rsnt.blendMode = text.blendMode as any;
+            rsnt.visible = text.visible;
+            rsnt.effects = this.extractEffects(text.effects);
+
+            if (text.parent && (text.parent as FrameNode).layoutMode === 'NONE') {
+                rsnt.constraints = {
+                    horizontal: text.constraints.horizontal,
+                    vertical: text.constraints.vertical
+                };
+            }
+
             rsnt.fills = this.extractFills(text.fills);
         }
 
@@ -103,24 +160,56 @@ export const rsntConversionService = {
             if (fill.type === 'SOLID') {
                 return {
                     type: 'SOLID',
-                    color: { r: fill.color.r, g: fill.color.g, b: fill.color.b }
+                    color: { r: fill.color.r, g: fill.color.g, b: fill.color.b },
+                    opacity: fill.opacity // Capture fill opacity if present
                 };
             }
             return null;
         }).filter(f => f) as any[]; // Type assertion for simplicity
     },
 
-    extractStrokes(strokes: ReadonlyArray<Paint> | PluginAPI['mixed']): any[] | undefined {
+    extractStrokes(node: any): any[] | undefined {
+        const strokes = node.strokes;
         if (!strokes || strokes === figma.mixed || !Array.isArray(strokes)) return undefined;
+        const weight = node.strokeWeight;
 
         return strokes.map(stroke => {
             if (stroke.type === 'SOLID') {
                 return {
                     type: 'SOLID',
-                    color: { r: stroke.color.r, g: stroke.color.g, b: stroke.color.b }
+                    color: { r: stroke.color.r, g: stroke.color.g, b: stroke.color.b },
+                    opacity: stroke.opacity,
+                    weight: typeof weight === 'number' ? weight : 1
                 };
             }
             return null;
         }).filter(s => s) as any[];
+    },
+
+    extractEffects(effects: ReadonlyArray<Effect> | PluginAPI['mixed']): any[] | undefined {
+        if (!effects || effects === figma.mixed || !Array.isArray(effects)) return undefined;
+
+        return effects.map(effect => {
+            if (!effect.visible) return { ...effect, visible: false }; // Keep invisible effects for completeness or skip? Let's keep.
+
+            if (effect.type === 'DROP_SHADOW' || effect.type === 'INNER_SHADOW') {
+                return {
+                    type: effect.type,
+                    color: effect.color,
+                    offset: effect.offset,
+                    radius: effect.radius,
+                    spread: effect.spread,
+                    visible: effect.visible,
+                    blendMode: effect.blendMode
+                };
+            } else if (effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR') {
+                return {
+                    type: effect.type,
+                    radius: effect.radius,
+                    visible: effect.visible
+                };
+            }
+            return null;
+        }).filter(e => e) as any[];
     }
 };

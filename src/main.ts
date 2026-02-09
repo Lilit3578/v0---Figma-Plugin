@@ -244,7 +244,7 @@ figma.ui.onmessage = async (msg) => {
         }
       });
 
-      const result = await pipeline.run(intent);
+      const result = await pipeline.run(intent, selectionContext);
 
       if (!result.success || !result.rsnt) {
         const errorMsg = result.reasoning.warnings[0] || 'Pipeline failed';
@@ -879,19 +879,45 @@ figma.ui.onmessage = async (msg) => {
     try {
       if (figma.currentPage.selection.length > 0) {
         const selection = figma.currentPage.selection[0];
-        const contextRSNT = rsntConversionService.convertNodeToRSNT(selection);
+
+        // Walk up to find the nearest Frame or Section to use as scope
+        let scopeNode = selection;
+        let currentNode: BaseNode | null = selection;
+
+        while (currentNode) {
+          if (currentNode.type === 'FRAME' || currentNode.type === 'SECTION') {
+            scopeNode = currentNode as SceneNode;
+            // Don't go higher than the immediate legitimate container
+            // If the selection IS a frame, we might want to check if it's a "root" frame or a nested one
+            // For now, let's treat the nearest Frame/Section as the scope
+            break;
+          }
+          currentNode = currentNode.parent;
+          if (currentNode?.type === 'PAGE' || currentNode?.type === 'DOCUMENT') {
+            break;
+          }
+        }
+
+        console.log(`Context scope: "${scopeNode.name}" (${scopeNode.type}) for target "${selection.name}"`);
+
+        const contextRSNT = rsntConversionService.convertNodeToRSNT(scopeNode);
 
         // Capture positioning metadata for side-by-side modification
+        // We use the SCOPE node for positioning (placing next to the whole frame)
+        // But we track the TARGET node ID so the AI knows what to modify
         const context = {
           rsnt: contextRSNT,
-          nodeId: selection.id,
+          nodeId: scopeNode.id, // The ID of the container we are sending
+          targetNodeId: selection.id, // The ID of the specific element selected
           position: {
-            x: selection.x,
-            y: selection.y,
-            width: selection.width,
-            height: selection.height
+            x: scopeNode.x,
+            y: scopeNode.y,
+            width: scopeNode.width,
+            height: scopeNode.height
           },
-          parentId: selection.parent?.type === 'FRAME' ? selection.parent.id : null
+          parentId: scopeNode.parent?.type === 'FRAME' || scopeNode.parent?.type === 'SECTION' || scopeNode.parent?.type === 'PAGE'
+            ? scopeNode.parent.id
+            : null
         };
 
         figma.ui.postMessage({
@@ -921,17 +947,27 @@ figma.ui.onmessage = async (msg) => {
  */
 async function resolveRSNTTree(node: any, inventory: DesignSystemInventory): Promise<void> {
   const componentIds = new Set(inventory.components.map(c => c.id));
+  const componentKeys = new Map(inventory.components.filter(c => c.key).map(c => [c.key, c.id]));
+
+  console.log(`[Resolver] Inventory IDs:`, Array.from(componentIds));
+  console.log(`[Resolver] Inventory Keys:`, Array.from(componentKeys.keys()));
 
   async function walk(n: any): Promise<void> {
     if (!n) return;
 
     if (n.type === 'COMPONENT_INSTANCE') {
-      // Fast path: componentId is valid — leave as is
+      // 1. Precise match by ID
       if (n.componentId && componentIds.has(n.componentId)) {
         // Already valid, no resolution needed
-      } else {
+      }
+      // 2. Precise match by Key (for library components)
+      else if (n.componentKey && componentKeys.has(n.componentKey)) {
+        console.log(`Resolving node "${n.name || n.id}" by key "${n.componentKey}"`);
+        n.componentId = componentKeys.get(n.componentKey);
+      }
+      else {
         // Resolution path: componentId missing or invalid
-        console.log(`Resolving node "${n.name || n.id}" — componentId "${n.componentId}" not in inventory`);
+        console.log(`Resolving node "${n.name || n.id}" — componentId "${n.componentId}" not in inventory and no key match`);
         try {
           const result = await resolveNode(n, inventory);
 

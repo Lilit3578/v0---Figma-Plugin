@@ -8,6 +8,7 @@ export interface RSNT_Node {
 
     // For COMPONENT_INSTANCE
     componentId?: string;
+    componentKey?: string; // Stable identifier for library components
     properties?: Record<string, string>;
 
     // For FRAME
@@ -41,14 +42,33 @@ export interface RSNT_Node {
     strokes?: Array<{
         type: 'SOLID';
         color: { r: number; g: number; b: number };
+        opacity?: number;
+        weight?: number; // Optional per-stroke weight if we want to be hyper-detailed, but node-level is usually enough
     }>;
     cornerRadius?: number | { variableId: string };
+    strokeWeight?: number | { variableId: string };
+
+    // Layout and Visibility
+    opacity?: number;     // 0-1
+    blendMode?: 'PASS_THROUGH' | 'NORMAL' | 'DARKEN' | 'MULTIPLY' | 'LINEAR_BURN' | 'COLOR_BURN' | 'LIGHTEN' | 'SCREEN' | 'LINEAR_DODGE' | 'COLOR_DODGE' | 'OVERLAY' | 'SOFT_LIGHT' | 'HARD_LIGHT' | 'DIFFERENCE' | 'EXCLUSION' | 'HUE' | 'SATURATION' | 'COLOR' | 'LUMINOSITY';
+    visible?: boolean;
 
     // Layout constraints
     constraints?: {
         horizontal: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE';
         vertical: 'MIN' | 'CENTER' | 'MAX' | 'STRETCH' | 'SCALE';
     };
+
+    // Advanced Styling
+    effects?: Array<{
+        type: 'DROP_SHADOW' | 'INNER_SHADOW' | 'LAYER_BLUR' | 'BACKGROUND_BLUR';
+        color?: { r: number; g: number; b: number; a: number };
+        offset?: { x: number; y: number };
+        radius?: number;
+        spread?: number;
+        visible?: boolean;
+        blendMode?: string;
+    }>;
 
     // Children
     children?: RSNT_Node[];
@@ -198,11 +218,34 @@ export function validateRSNT(
         switch (currentNode.type) {
             case 'COMPONENT_INSTANCE':
                 if (!currentNode.componentId) {
-                    const code = ErrorCode.MISSING_REQUIRED_PROPERTY;
-                    errors.push({ rule: 'required-field', message: 'COMPONENT_INSTANCE requires componentId', location: locationPath, severity: 'error', code, guidance: ERROR_GUIDANCE[code].guidance });
-                } else if (!currentContext.availableComponents.has(currentNode.componentId)) {
+                    if (currentNode.name) {
+                        warnings.push({
+                            rule: 'missing-id-fallback',
+                            message: `COMPONENT_INSTANCE missing componentId, will attempt fallback by name: "${currentNode.name}"`,
+                            location: locationPath,
+                            severity: 'warning'
+                        });
+                    } else {
+                        const code = ErrorCode.MISSING_REQUIRED_PROPERTY;
+                        errors.push({
+                            rule: 'required-field',
+                            message: 'COMPONENT_INSTANCE requires componentId or name',
+                            location: locationPath,
+                            severity: 'error',
+                            code,
+                            guidance: ERROR_GUIDANCE[code].guidance
+                        });
+                    }
+                } else if (!currentContext.availableComponents.has(currentNode.componentId) && !currentNode.componentKey) {
                     const code = ErrorCode.COMPONENT_NOT_FOUND;
-                    errors.push({ rule: 'component-not-found', message: `Component ${currentNode.componentId} not found in file`, location: locationPath, severity: 'error', code, guidance: ERROR_GUIDANCE[code].guidance });
+                    errors.push({
+                        rule: 'component-not-found',
+                        message: `Component ${currentNode.componentId} not found in file and no componentKey provided`,
+                        location: locationPath,
+                        severity: 'error',
+                        code,
+                        guidance: ERROR_GUIDANCE[code].guidance
+                    });
                 }
 
                 // CRITICAL: Component instances cannot have children

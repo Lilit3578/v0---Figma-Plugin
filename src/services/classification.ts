@@ -167,7 +167,8 @@ ${JSON.stringify(components.map(c => ({
                             }],
                             generationConfig: {
                                 temperature: 0.2,
-                                responseMimeType: "application/json"
+                                responseMimeType: "application/json",
+                                maxOutputTokens: 8192
                             }
                         })
                     }

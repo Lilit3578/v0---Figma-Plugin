@@ -3,7 +3,7 @@ import { classificationService } from './classification';
 import { PropertyAnalysis, PropertyType, ValueMapping, AppliedMapping } from '../types/classification';
 import { findBestMatch, stringSimilarity } from '../utils/string-similarity';
 
-const MAPPING_CACHE_KEY = 'property_mappings_v1';
+const MAPPING_CACHE_KEY = 'property_mappings_v2';
 
 export class PropertyMappingService {
     private mappingCache: Map<string, Record<string, PropertyAnalysis>> = new Map();
@@ -92,6 +92,7 @@ export class PropertyMappingService {
 
         // Cache results
         this.mappingCache.set(component.id, results);
+        console.log(`[PropertyMapping] Analysis complete for "${component.name}":`, results);
 
         if (shouldSave) {
             await this.saveMappings();
@@ -120,14 +121,49 @@ export class PropertyMappingService {
             // LOGGING
             console.log(`[PropertyMapping] Checking semantics for ${componentId}. Input:`, rsntProps);
 
-            Object.entries(semanticLookup).forEach(([semanticKey, mapData]) => {
-                if (rsntProps[semanticKey]) {
-                    const clientValue = mapData.valueMap[rsntProps[semanticKey]];
-                    if (clientValue) {
-                        resultProps[mapData.compProp] = clientValue;
-                        console.log(`[PropertyMapping] Mapped ${semanticKey}="${rsntProps[semanticKey]}" -> ${mapData.compProp}="${clientValue}"`);
+            // Iterate through RSNT props to apply mappings
+            Object.entries(rsntProps).forEach(([k, v]) => {
+                const searchKey = k.toLowerCase();
+                const searchValue = String(v).toLowerCase();
+
+                // 1. Check if the key and value already match a definition exactly (Case-insensitive)
+                // If they do, we use them as-is and don't try to map semantically.
+                let exactMatchFound = false;
+                for (const [defName, analysis] of Object.entries(mappings)) {
+                    const typedAnalysis = analysis as any;
+                    if (defName.toLowerCase() === searchKey) {
+                        // Key matches. Does the value match an option?
+                        const validOptions = typedAnalysis.valueMappings?.map((m: any) => m.clientValue) || [];
+                        const match = validOptions.find((opt: any) => opt.toLowerCase() === searchValue);
+                        if (match) {
+                            resultProps[defName] = match; // Use the properly-cased Figma name
+                            exactMatchFound = true;
+                            break;
+                        }
                     }
                 }
+
+                if (exactMatchFound) return; // Skip semantic mapping for this prop if exact match found
+
+                // 2. Fall back to semantic lookup for things like "variant" or "size"
+                Object.entries(semanticLookup).forEach(([semanticKey, mapData]) => {
+                    if (semanticKey.toLowerCase() === searchKey) {
+                        const searchValueRaw = String(v).toLowerCase();
+                        // Find value match
+                        const match = Object.entries(mapData.valueMap).find(
+                            ([semVal, cliVal]) => semVal.toLowerCase() === searchValueRaw
+                        );
+                        if (match) {
+                            resultProps[mapData.compProp] = match[1];
+                            console.log(`[PropertyMapping] Mapped ${semanticKey}="${rsntProps[k]}" -> ${mapData.compProp}="${match[1]}"`);
+                        } else {
+                            // If semantic key matches but value doesn't, it's a skipped prop
+                            // We don't have a 'skippedProps' array in this method, so we'll just leave it as is in resultProps
+                            // or remove it if it's a semantic prop that couldn't be mapped.
+                            // For now, it remains in resultProps if it was there initially.
+                        }
+                    }
+                });
             });
             return resultProps;
         }
