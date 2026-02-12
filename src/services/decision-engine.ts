@@ -11,6 +11,9 @@
 import { DesignSystemInventory, ComponentInfo } from './auto-discovery';
 import { DesignIntent, ComponentRequirement } from './intent-parser';
 import { propertyMappingService } from './property-mapping';
+import { analyzeDesignIntent, applyHierarchyOrdering, applySpatialRules, DesignReasoning } from './design-reasoning';
+import { detectPattern, designPatternService, DesignPattern } from './design-patterns';
+import { resolveSpacingToken } from './token-resolver';
 
 // ============================================================================
 // TYPES
@@ -68,6 +71,8 @@ export interface DesignDecision {
     hierarchy: HierarchyDecision;
     overallConfidence: number;
     designRationale: string;
+    reasoning?: DesignReasoning;
+    pattern?: DesignPattern; // Full pattern object for validation
 }
 
 // ============================================================================
@@ -93,42 +98,79 @@ export class DecisionEngine {
      * Make all design decisions for a parsed intent
      */
     async makeDecisions(intent: DesignIntent): Promise<DesignDecision> {
-        // LOGGING: Inventory State
-        console.log(`[DecisionEngine] Starting decision process. Inventory has ${this.inventory.components.length} components.`);
-        this.inventory.components.forEach(c => {
-            if (c.name.toLowerCase().includes('button')) {
-                console.log(`[Inventory] Found component: ${c.name} (${c.id})`);
-                console.log(`[Inventory] Variants:`, c.variantProperties ? Object.keys(c.variantProperties) : 'None');
-            }
+        console.log('=== Multi-Step Decision Making (WITH REASONING) ===');
+
+        // NEW STEP 1: Generate Design Reasoning FIRST
+        console.log('Step 1: Analyzing design intent and generating reasoning...');
+        const reasoning = await analyzeDesignIntent(
+            intent.description || intent.type,
+            this.inventory,
+            this.aiCall
+        );
+
+        console.log('Design Reasoning:', {
+            goal: reasoning.goal,
+            pattern: reasoning.pattern,
+            layoutStrategy: reasoning.layoutStrategy,
+            spacing: reasoning.tokenUsage.spacing
         });
 
-        // Step 1: Select components from design system
+        // NEW STEP 2: Detect Design Pattern
+        console.log('Step 2: Detecting design pattern...');
+        const pattern = detectPattern(intent.description || intent.type);
+
+        if (pattern) {
+            console.log(`Pattern Detected: ${pattern.name}`);
+            console.log(`  Layout: ${pattern.layout.mode}`);
+            console.log(`  CTA Placement: ${pattern.hierarchy.ctaPlacement}`);
+        }
+
+        // STEP 3: Select components (existing logic, but now with reasoning context)
+        console.log('Step 3: Selecting components...');
         const componentDecisions = await this.selectComponents(intent);
 
-        // Step 2: Decide layout based on intent and components
-        const layoutDecision = this.decideLayout(intent, componentDecisions);
+        // NEW STEP 4: Apply Hierarchy Ordering
+        console.log('Step 4: Applying hierarchy ordering...');
+        const orderedComponents = applyHierarchyOrdering(componentDecisions, reasoning);
 
-        // Step 3: Decide styling
+        console.log('Component order:', orderedComponents.map((c: any) => c.requirement.type));
+
+        // STEP 5: Decide layout (enhanced with reasoning + pattern)
+        console.log('Step 5: Deciding layout with reasoning...');
+        const layoutDecision = this.decideLayoutWithReasoning(
+            intent,
+            orderedComponents,
+            reasoning,
+            pattern
+        );
+
+        // STEP 6: Decide styling
         const stylingDecision = this.decideStyling(intent);
 
-        // Step 4: Decide hierarchy/grouping
-        const hierarchyDecision = this.decideHierarchy(intent, componentDecisions);
+        // STEP 7: Decide hierarchy (enhanced with spatial rules)
+        const hierarchyDecision = this.decideHierarchyWithRules(
+            intent,
+            orderedComponents,
+            reasoning
+        );
 
         // Calculate overall confidence
         const confidences = [
             intent.confidence,
-            ...componentDecisions.map(c => c.confidence),
+            ...orderedComponents.map((c: any) => c.confidence),
         ];
         const overallConfidence = confidences.reduce((a, b) => a + b, 0) / confidences.length;
 
         return {
             intent,
-            components: componentDecisions,
+            components: orderedComponents,
             layout: layoutDecision,
             styling: stylingDecision,
             hierarchy: hierarchyDecision,
             overallConfidence,
-            designRationale: this.generateRationale(intent, componentDecisions, layoutDecision),
+            designRationale: this.generateRationale(intent, orderedComponents, layoutDecision),
+            reasoning, // Attach reasoning for transparency
+            pattern: pattern || undefined, // Attach full detected pattern object
         };
     }
 
@@ -221,6 +263,19 @@ export class DecisionEngine {
     private getSearchTerms(requirement: ComponentRequirement): string[] {
         const terms: string[] = [requirement.type];
 
+        // Add common synonyms
+        const synonyms: Record<string, string[]> = {
+            input: ['field', 'textfield', 'text field', 'input box'],
+            checkbox: ['check box', 'tick box', 'toggle'],
+            radio: ['radio button', 'option'],
+            text: ['label', 'typography', 'shim'],
+            heading: ['header', 'title', 'headline', 'display'],
+        };
+
+        if (synonyms[requirement.type]) {
+            terms.push(...synonyms[requirement.type]);
+        }
+
         if (requirement.variant) terms.push(requirement.variant);
         if (requirement.inputType) terms.push(requirement.inputType);
         if (requirement.label) {
@@ -240,27 +295,38 @@ export class DecisionEngine {
         const nameLower = component.name.toLowerCase();
         let score = 0;
 
-        // Direct type match (highest priority)
-        if (nameLower.includes(requirement.type)) {
+        // 1. Direct type match (highest priority)
+        if (nameLower === requirement.type || nameLower.includes(requirement.type)) {
+            score += 0.5;
+        }
+        // 2. Strong Synonym Match (Manual Overrides for common mismatches)
+        else if (requirement.type === 'input' && (nameLower.includes('field') || nameLower.includes('text'))) {
+            score += 0.5;
+        }
+        else if (requirement.type === 'heading' && (nameLower.includes('title') || nameLower.includes('header'))) {
             score += 0.5;
         }
 
-        // Variant match
+        // 3. Variant match
         if (requirement.variant && nameLower.includes(requirement.variant)) {
             score += 0.3;
         }
 
-        // Input type match
+        // 4. Input type match
         if (requirement.inputType && nameLower.includes(requirement.inputType)) {
             score += 0.2;
         }
 
-        // General term matches
+        // 5. General term matches (cumulative but capped)
+        let termScore = 0;
         for (const term of searchTerms) {
-            if (nameLower.includes(term)) {
-                score += 0.1;
+            if (nameLower === term) {
+                termScore += 0.3; // Exact term match is strong
+            } else if (nameLower.includes(term)) {
+                termScore += 0.1;
             }
         }
+        score += Math.min(termScore, 0.4); // Cap term bonuses
 
         // Bonus for exact semantic type match
         if (component.semanticType) {
@@ -324,6 +390,49 @@ export class DecisionEngine {
         // Map text/label
         if (requirement.label || requirement.text) {
             props.text = requirement.label || requirement.text || '';
+        }
+
+        // Map input type to variant if applicable (e.g. Field component)
+        if (requirement.inputType && !props.variant) {
+            // Try to map input type to a variant
+            // e.g. inputType="email" -> variant="EmailAddress" or "Email"
+            // e.g. inputType="password" -> variant="Password"
+
+            if (component.variantProperties) {
+                // Heuristic: Check if any variant value contains the input type
+                const inputType = requirement.inputType.toLowerCase();
+                const terms = [inputType];
+
+                // Add specific mappings for common types
+                if (inputType === 'email') terms.push('emailaddress', 'email address');
+                if (inputType === 'text') terms.push('textinput', 'text input');
+
+                let found = false;
+
+                // Look through all variant properties
+                for (const [propName, propDef] of Object.entries(component.variantProperties)) {
+                    // Try to find a value that matches
+                    for (const term of terms) {
+                        const match = propDef.values.find(v => v.toLowerCase().replace(/\s/g, '') === term);
+                        if (match) {
+                            props[propName] = match;
+                            found = true;
+                            console.log(`[ComponentMapper] Mapped inputType "${requirement.inputType}" to ${propName}="${match}"`);
+                            break;
+                        }
+
+                        // Try partial match if exact failed
+                        const partial = propDef.values.find(v => v.toLowerCase().includes(term));
+                        if (partial) {
+                            props[propName] = partial;
+                            found = true;
+                            console.log(`[ComponentMapper] Mapped inputType "${requirement.inputType}" to ${propName}="${partial}" (partial)`);
+                            break;
+                        }
+                    }
+                    if (found) break;
+                }
+            }
         }
 
         return props;
@@ -635,6 +744,132 @@ export class DecisionEngine {
         }
 
         return groups;
+    }
+
+    private decideLayoutWithReasoning(
+        intent: DesignIntent,
+        components: ComponentDecision[],
+        reasoning: DesignReasoning,
+        pattern: DesignPattern | null
+    ): LayoutDecision {
+        // Use pattern layout if detected
+        const layoutMode = pattern?.layout.mode ||
+            (reasoning.layoutStrategy === 'stack' ? 'VERTICAL' :
+                reasoning.layoutStrategy === 'grid' ? 'HORIZONTAL' : 'VERTICAL');
+
+        // Map spacing semantic to token — use the token resolver to bind to
+        // actual design system variables instead of hardcoded pixel values.
+        const spacingTier = reasoning.tokenUsage.spacing;
+        const densityMap: Record<string, 'tight' | 'comfortable' | 'spacious'> = {
+            tight: 'tight',
+            comfortable: 'comfortable',
+            spacious: 'spacious',
+        };
+        const density = densityMap[spacingTier] || 'comfortable';
+        const platform = intent.constraints.platform === 'mobile' ? 'mobile' : 'desktop';
+
+        const spacingToken = resolveSpacingToken(
+            { semanticIntent: intent.type, density, platform, element: 'section' },
+            this.inventory
+        );
+        const itemSpacing = typeof spacingToken.value === 'number'
+            ? spacingToken.value
+            : this.findClosest(16, this.spacingScale);
+
+        console.log(`[DecisionEngine] Resolved spacing: ${spacingToken.name} = ${itemSpacing}px (confidence: ${spacingToken.confidence})`);
+
+        // Resolve padding via token resolver
+        const paddingToken = resolveSpacingToken(
+            { semanticIntent: intent.type, density, platform, element: 'container' },
+            this.inventory
+        );
+        const paddingFallback = pattern
+            ? ({ compact: 12, standard: 24, generous: 48 } as Record<string, number>)[pattern.spacing.priority] || 24
+            : this.determinePadding(intent);
+        const paddingValue = typeof paddingToken.value === 'number'
+            ? paddingToken.value
+            : paddingFallback;
+
+        console.log(`[DecisionEngine] Resolved padding: ${paddingToken.name} = ${paddingValue}px (confidence: ${paddingToken.confidence})`);
+
+        // Determine width based on pattern distribution
+        let width: number | undefined;
+        if (pattern?.layout.distribution === '20-80') {
+            width = 240; // Sidebar width
+        } else if (pattern?.layout.distribution === '70-30') {
+            width = undefined; // Let it flex
+        }
+
+        return {
+            layoutMode,
+            primaryAxisSizingMode: width ? 'FIXED' : 'AUTO',
+            counterAxisSizingMode: 'AUTO',
+            primaryAxisAlignItems: this.mapAlignment(intent.layout.alignment, true),
+            counterAxisAlignItems: this.mapAlignment(intent.layout.alignment, false),
+            itemSpacing,
+            padding: {
+                top: paddingValue,
+                right: paddingValue,
+                bottom: paddingValue,
+                left: paddingValue,
+            },
+            width,
+            reasoning: `Using ${reasoning.pattern} pattern with ${spacingTier} spacing (${itemSpacing}px). Padding: ${paddingValue}px. ${pattern ? `Applied ${pattern.name} rules.` : ''}`,
+        };
+    }
+
+    private decideHierarchyWithRules(
+        intent: DesignIntent,
+        components: ComponentDecision[],
+        reasoning: DesignReasoning
+    ): HierarchyDecision {
+        // Use reasoning to determine grouping
+        const shouldGroup = components.length > 5 || reasoning.layoutStrategy === 'dashboard';
+
+        if (!shouldGroup) {
+            return {
+                structure: 'flat',
+                groups: [{
+                    name: 'main',
+                    components: components.map((_, i) => i),
+                    hasContainer: false,
+                }],
+                reasoning: 'Simple layout - flat structure'
+            };
+        }
+
+        // Group by hierarchy tier
+        const groups: HierarchyDecision['groups'] = [];
+
+        const primaryIndices = components
+            .map((c, i) => reasoning.hierarchy.primary.includes(c.requirement.type) ? i : -1)
+            .filter(i => i >= 0);
+
+        if (primaryIndices.length > 0) {
+            groups.push({
+                name: 'primary-content',
+                components: primaryIndices,
+                hasContainer: reasoning.layoutStrategy === 'dashboard',
+            });
+        }
+
+        const secondaryIndices = components
+            .map((c, i) => reasoning.hierarchy.secondary.includes(c.requirement.type) ? i : -1)
+            .filter(i => i >= 0);
+
+        if (secondaryIndices.length > 0) {
+            groups.push({
+                name: 'secondary-content',
+                components: secondaryIndices,
+                hasContainer: false,
+            });
+        }
+
+        return {
+            structure: 'grouped',
+            groups,
+            reasoning: `Grouped by ${reasoning.pattern} hierarchy rules`
+        };
     }
 
     /**

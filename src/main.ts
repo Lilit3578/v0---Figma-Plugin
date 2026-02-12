@@ -244,7 +244,7 @@ figma.ui.onmessage = async (msg) => {
         }
       });
 
-      const result = await pipeline.run(intent, selectionContext);
+      const result = await pipeline.run(intent, selectionContext?.rsnt);
 
       if (!result.success || !result.rsnt) {
         const errorMsg = result.reasoning.warnings[0] || 'Pipeline failed';

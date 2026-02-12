@@ -21,6 +21,27 @@ import {
     StylingDecision,
     HierarchyDecision
 } from './decision-engine';
+import { DesignReasoning, applySpatialRules } from './design-reasoning';
+import { DesignPattern, designPatternService } from './design-patterns';
+import { resolveColorToken } from './token-resolver';
+
+// ============================================================================
+// HARDCODED FALLBACK COLORS (used only when design system has no matching variable)
+// ============================================================================
+const FALLBACK_COLORS = {
+    primaryBg: { r: 0.2, g: 0.4, b: 0.9 },
+    destructiveBg: { r: 0.9, g: 0.2, b: 0.2 },
+    secondaryBg: { r: 0.95, g: 0.95, b: 0.95 },
+    ghostBg: { r: 1, g: 1, b: 1 },
+    white: { r: 1, g: 1, b: 1 },
+    textDark: { r: 0.1, g: 0.1, b: 0.1 },
+    textBody: { r: 0.2, g: 0.2, b: 0.2 },
+    textMuted: { r: 0.3, g: 0.3, b: 0.3 },
+    textPlaceholder: { r: 0.6, g: 0.6, b: 0.6 },
+    border: { r: 0.85, g: 0.85, b: 0.85 },
+    borderLight: { r: 0.9, g: 0.9, b: 0.9 },
+    primaryText: { r: 0.2, g: 0.4, b: 0.9 },
+};
 
 // ============================================================================
 // TYPES
@@ -33,7 +54,7 @@ export interface BuildResult {
 }
 
 export interface BuildLogEntry {
-    phase: 'component' | 'layout' | 'styling' | 'hierarchy';
+    phase: 'component' | 'layout' | 'styling' | 'hierarchy' | 'validation';
     action: string;
     details: string;
 }
@@ -47,12 +68,34 @@ export class RSNTBuilder {
     private warnings: string[] = [];
     private nodeIdCounter: number = 0;
 
-    constructor(private inventory: DesignSystemInventory) {}
+    constructor(private inventory: DesignSystemInventory) { }
+
+    /**
+     * Resolve a semantic color name to a fill, preferring design system variables.
+     * Falls back to hardcoded color if no matching variable exists.
+     */
+    private resolveFill(
+        semanticName: 'primary' | 'secondary' | 'tertiary' | 'success' | 'error',
+        fallbackColor: { r: number; g: number; b: number }
+    ): { type: 'SOLID' | 'VARIABLE'; color?: { r: number; g: number; b: number }; variableId?: string } {
+        const resolved = resolveColorToken(semanticName, this.inventory);
+        if (resolved) {
+            return { type: 'VARIABLE', variableId: resolved.variableId };
+        }
+        return { type: 'SOLID', color: fallbackColor };
+    }
 
     /**
      * Build RSNT tree from design decisions
      */
-    build(decision: DesignDecision): BuildResult {
+    /**
+     * Build RSNT tree from design decisions
+     */
+    build(
+        decision: DesignDecision,
+        reasoning?: DesignReasoning,
+        pattern?: DesignPattern
+    ): BuildResult {
         this.buildLog = [];
         this.warnings = [];
         this.nodeIdCounter = 0;
@@ -64,17 +107,53 @@ export class RSNTBuilder {
         const componentNodes = this.buildComponents(decision.components);
 
         // Apply hierarchy (grouping)
-        const structuredChildren = this.applyHierarchy(
+        let structuredChildren = this.applyHierarchy(
             componentNodes,
             decision.hierarchy,
             decision.layout
         );
+
+        // NEW: Apply spatial rules from reasoning
+        if (reasoning) {
+            structuredChildren = applySpatialRules(structuredChildren, reasoning);
+            this.log('hierarchy', 'Applied spatial rules',
+                `${reasoning.spatialRules.length} rules applied`);
+        }
 
         // Attach children to root
         root.children = structuredChildren;
 
         // Apply root styling
         this.applyStyling(root, decision.styling);
+
+        // NEW: Validate against pattern
+        if (pattern) {
+            const validation = designPatternService.validateAgainstPattern(
+                root,
+                pattern,
+                decision.intent
+            );
+
+            if (validation && !validation.valid && Array.isArray(validation.violations)) {
+                this.warnings.push(...validation.violations);
+                this.log('validation', 'Pattern violations detected',
+                    `${validation.violations.length} violations`);
+
+                // Auto-fix violations
+                const fixResult = designPatternService.fixPatternViolations(
+                    root,
+                    pattern,
+                    decision.intent
+                );
+
+                if (fixResult && fixResult.fixes && Array.isArray(fixResult.fixes) && fixResult.fixes.length > 0) {
+                    this.log('validation', 'Applied auto-fixes', fixResult.fixes.join('; '));
+                    if (fixResult.fixed) {
+                        Object.assign(root, fixResult.fixed); // Apply fixes
+                    }
+                }
+            }
+        }
 
         this.log('hierarchy', 'Complete', `Built RSNT tree with ${this.countNodes(root)} nodes`);
 
@@ -190,7 +269,7 @@ export class RSNTBuilder {
             layoutMode: 'VERTICAL',
             primaryAxisSizingMode: 'AUTO',
             counterAxisSizingMode: 'AUTO',
-            itemSpacing: 6,
+            itemSpacing: 8,
             children: []
         };
 
@@ -202,7 +281,7 @@ export class RSNTBuilder {
                 name: 'label',
                 characters: req.label,
                 fontSize: 14,
-                fills: [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 } }]
+                fills: [{ type: 'SOLID', color: FALLBACK_COLORS.textBody }]
             });
         }
 
@@ -216,16 +295,16 @@ export class RSNTBuilder {
             counterAxisSizingMode: 'AUTO',
             width: 280,
             padding: { top: 10, right: 12, bottom: 10, left: 12 },
-            cornerRadius: 6,
-            fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
-            strokes: [{ type: 'SOLID', color: { r: 0.85, g: 0.85, b: 0.85 } }],
+            cornerRadius: 8,
+            fills: [{ type: 'SOLID', color: FALLBACK_COLORS.white }],
+            strokes: [{ type: 'SOLID', color: FALLBACK_COLORS.border }],
             children: [{
                 id: this.generateId(`placeholder-${index}`),
                 type: 'TEXT',
                 name: 'placeholder',
                 characters: req.placeholder || `Enter ${req.label?.toLowerCase() || 'text'}...`,
                 fontSize: 14,
-                fills: [{ type: 'SOLID', color: { r: 0.6, g: 0.6, b: 0.6 } }]
+                fills: [{ type: 'SOLID', color: FALLBACK_COLORS.textPlaceholder }]
             }]
         };
 
@@ -242,20 +321,25 @@ export class RSNTBuilder {
      * Build button from primitives
      */
     private buildButtonPrimitive(req: ComponentDecision['requirement'], index: number): RSNT_Node {
-        const isPrimary = req.variant === 'primary' || !req.variant;
         const isDestructive = req.variant === 'destructive';
 
-        let bgColor = { r: 0.2, g: 0.4, b: 0.9 }; // Primary blue
-        let textColor = { r: 1, g: 1, b: 1 };
+        // Resolve fills from design system variables, with hardcoded fallbacks
+        let bgFill: RSNT_Node['fills'];
+        let textFill: RSNT_Node['fills'];
 
         if (isDestructive) {
-            bgColor = { r: 0.9, g: 0.2, b: 0.2 };
+            bgFill = [this.resolveFill('error', FALLBACK_COLORS.destructiveBg)];
+            textFill = [{ type: 'SOLID', color: FALLBACK_COLORS.white }];
         } else if (req.variant === 'secondary') {
-            bgColor = { r: 0.95, g: 0.95, b: 0.95 };
-            textColor = { r: 0.2, g: 0.2, b: 0.2 };
+            bgFill = [this.resolveFill('secondary', FALLBACK_COLORS.secondaryBg)];
+            textFill = [{ type: 'SOLID', color: FALLBACK_COLORS.textBody }];
         } else if (req.variant === 'ghost' || req.variant === 'tertiary') {
-            bgColor = { r: 1, g: 1, b: 1 };
-            textColor = { r: 0.2, g: 0.4, b: 0.9 };
+            bgFill = [{ type: 'SOLID', color: FALLBACK_COLORS.ghostBg }];
+            textFill = [this.resolveFill('primary', FALLBACK_COLORS.primaryText)];
+        } else {
+            // Primary (default)
+            bgFill = [this.resolveFill('primary', FALLBACK_COLORS.primaryBg)];
+            textFill = [{ type: 'SOLID', color: FALLBACK_COLORS.white }];
         }
 
         const button: RSNT_Node = {
@@ -268,15 +352,15 @@ export class RSNTBuilder {
             primaryAxisAlignItems: 'CENTER',
             counterAxisAlignItems: 'CENTER',
             padding: { top: 10, right: 20, bottom: 10, left: 20 },
-            cornerRadius: 6,
-            fills: [{ type: 'SOLID', color: bgColor }],
+            cornerRadius: 8,
+            fills: bgFill,
             children: [{
                 id: this.generateId(`button-text-${index}`),
                 type: 'TEXT',
                 name: 'label',
                 characters: req.label || 'Button',
                 fontSize: 14,
-                fills: [{ type: 'SOLID', color: textColor }]
+                fills: textFill
             }]
         };
 
@@ -307,7 +391,7 @@ export class RSNTBuilder {
             name: `h${level}`,
             characters: req.text || 'Heading',
             fontSize: fontSizes[level] || 24,
-            fills: [{ type: 'SOLID', color: { r: 0.1, g: 0.1, b: 0.1 } }]
+            fills: [{ type: 'SOLID', color: FALLBACK_COLORS.textDark }]
         };
 
         this.log('component', `Built heading primitive`, `Level ${level}: "${req.text}"`);
@@ -325,7 +409,7 @@ export class RSNTBuilder {
             name: 'text',
             characters: req.text || '',
             fontSize: 14,
-            fills: [{ type: 'SOLID', color: { r: 0.3, g: 0.3, b: 0.3 } }]
+            fills: [{ type: 'SOLID', color: FALLBACK_COLORS.textMuted }]
         };
 
         this.log('component', `Built text primitive`, `"${(req.text || '').substring(0, 30)}..."`);
@@ -344,7 +428,7 @@ export class RSNTBuilder {
             layoutMode: 'NONE',
             width: 280,
             height: 1,
-            fills: [{ type: 'SOLID', color: { r: 0.9, g: 0.9, b: 0.9 } }]
+            fills: [{ type: 'SOLID', color: FALLBACK_COLORS.borderLight }]
         };
 
         this.log('component', `Built divider primitive`, 'Horizontal line');
@@ -374,8 +458,8 @@ export class RSNTBuilder {
                     width: 18,
                     height: 18,
                     cornerRadius: 4,
-                    fills: [{ type: 'SOLID', color: { r: 1, g: 1, b: 1 } }],
-                    strokes: [{ type: 'SOLID', color: { r: 0.7, g: 0.7, b: 0.7 } }]
+                    fills: [{ type: 'SOLID', color: FALLBACK_COLORS.white }],
+                    strokes: [{ type: 'SOLID', color: FALLBACK_COLORS.border }]
                 },
                 {
                     id: this.generateId(`toggle-label-${index}`),
@@ -383,7 +467,7 @@ export class RSNTBuilder {
                     name: 'label',
                     characters: req.label || 'Option',
                     fontSize: 14,
-                    fills: [{ type: 'SOLID', color: { r: 0.2, g: 0.2, b: 0.2 } }]
+                    fills: [{ type: 'SOLID', color: FALLBACK_COLORS.textBody }]
                 }
             ]
         };
@@ -408,16 +492,16 @@ export class RSNTBuilder {
             primaryAxisAlignItems: 'CENTER',
             counterAxisAlignItems: 'CENTER',
             padding: { top: 16, right: 16, bottom: 16, left: 16 },
-            cornerRadius: 4,
-            fills: [{ type: 'SOLID', color: { r: 0.95, g: 0.95, b: 0.95 } }],
-            strokes: [{ type: 'SOLID', color: { r: 0.8, g: 0.8, b: 0.8 } }],
+            cornerRadius: 8,
+            fills: [{ type: 'SOLID', color: FALLBACK_COLORS.secondaryBg }],
+            strokes: [{ type: 'SOLID', color: FALLBACK_COLORS.border }],
             children: [{
                 id: this.generateId(`generic-text-${index}`),
                 type: 'TEXT',
                 name: 'placeholder-text',
                 characters: `[${req.type}]`,
                 fontSize: 12,
-                fills: [{ type: 'SOLID', color: { r: 0.5, g: 0.5, b: 0.5 } }]
+                fills: [{ type: 'SOLID', color: FALLBACK_COLORS.textPlaceholder }]
             }]
         };
 

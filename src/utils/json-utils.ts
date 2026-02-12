@@ -59,18 +59,32 @@ export function repairJSON(jsonString: string): string {
 export function extractJSON(text: string): any {
     let cleaned = text.trim();
 
-    // Remove markdown code blocks if present
-    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    // Remove markdown code blocks if present (```json ... ```)
+    const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+        cleaned = codeBlockMatch[1].trim();
+    }
 
-    // If we found a block, use it. If not, maybe it's truncated, so use the whole text starting from first {
-    if (jsonMatch) {
-        cleaned = jsonMatch[0];
+    // Try to match a JSON object {...} or a JSON array [...]
+    const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+
+    if (objectMatch && arrayMatch) {
+        // Both found — use whichever appears first in the text
+        cleaned = objectMatch.index! <= arrayMatch.index! ? objectMatch[0] : arrayMatch[0];
+    } else if (objectMatch) {
+        cleaned = objectMatch[0];
+    } else if (arrayMatch) {
+        cleaned = arrayMatch[0];
     } else {
+        // Fallback: find first { or [ and use everything from there
         const firstBrace = cleaned.indexOf('{');
-        if (firstBrace !== -1) {
-            cleaned = cleaned.substring(firstBrace);
+        const firstBracket = cleaned.indexOf('[');
+        const starts = [firstBrace, firstBracket].filter(i => i !== -1);
+        if (starts.length > 0) {
+            cleaned = cleaned.substring(Math.min(...starts));
         } else {
-            throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { text }, 'No JSON object found in response');
+            throw createAIError(ErrorCode.INVALID_JSON_RESPONSE, { text }, 'No JSON object or array found in response');
         }
     }
 

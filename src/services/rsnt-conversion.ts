@@ -10,9 +10,9 @@ export const rsntConversionService = {
      * Convert a Figma node to RSNT_Node
      */
     convertNodeToRSNT(node: SceneNode): RSNT_Node {
-        // Basic properties
+        // Basic properties — use Figma's stable node ID for reliable targeting
         const rsnt: RSNT_Node = {
-            id: node.name, // Use name as ID since we want semantic IDs if possible, or we'll map back
+            id: node.id,
             type: this.mapType(node.type),
             name: node.name
         };
@@ -20,6 +20,11 @@ export const rsntConversionService = {
         // Type specific extractions
         if (node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'INSTANCE') {
             const frameParams = node as FrameNode; // Cast for shared properties
+
+            // ALWAYS capture actual dimensions — the AI needs these for spatial reasoning
+            // regardless of layout mode
+            rsnt.width = frameParams.width;
+            rsnt.height = frameParams.height;
 
             // Layout Info
             // Map Figma layoutMode to RSNT layoutMode
@@ -47,9 +52,11 @@ export const rsntConversionService = {
                     left: frameParams.paddingLeft
                 };
             } else {
-                // Absolute positioning dimensions
-                rsnt.width = frameParams.width;
-                rsnt.height = frameParams.height;
+                // Extract constraints for non-auto-layout frames (moved up from below)
+                rsnt.constraints = {
+                    horizontal: frameParams.constraints.horizontal,
+                    vertical: frameParams.constraints.vertical
+                };
             }
 
             // Advanced Styling
@@ -69,14 +76,6 @@ export const rsntConversionService = {
             rsnt.opacity = frameParams.opacity;
             rsnt.blendMode = frameParams.blendMode as any;
             rsnt.visible = frameParams.visible;
-
-            // Extract Constraints (for non-auto-layout)
-            if (rsnt.layoutMode === 'NONE') {
-                rsnt.constraints = {
-                    horizontal: frameParams.constraints.horizontal,
-                    vertical: frameParams.constraints.vertical
-                };
-            }
 
             // Instance specifics
             if (node.type === 'INSTANCE') {

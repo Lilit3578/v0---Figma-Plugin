@@ -1,94 +1,345 @@
-import { RSNT_Node } from '../types/rsnt';
-import { DesignIntent } from './intent-parser';
+/**
+ * Design Pattern Library
+ * Encodes common UI patterns and their spatial rules
+ */
 
-export interface Violation {
-    type: 'hierarchy' | 'layout' | 'spacing' | 'accessibility';
-    severity: 'error' | 'warning';
-    message: string;
-    nodeId: string; // The ID of the node in the RSNT tree (if available) or path
-    fix?: (node: RSNT_Node) => void;
+import { DesignSystemInventory } from './auto-discovery';
+import { RSNT_Node } from '../types/rsnt';
+
+export interface DesignPattern {
+    name: string;
+    triggers: string[];              // Keywords that activate this pattern
+    layout: {
+        mode: 'VERTICAL' | 'HORIZONTAL' | 'NONE';
+        distribution: string;           // "equal" | "70-30" | "sidebar-main"
+        wrapping: boolean;
+    };
+    hierarchy: {
+        heroElement: boolean;
+        contentFirst: boolean;          // Content before actions?
+        ctaPlacement: 'top' | 'bottom' | 'inline' | 'floating';
+    };
+    spacing: {
+        internal: string;               // Token tier (xs, sm, md, lg, xl)
+        external: string;
+        priority: 'compact' | 'standard' | 'generous';
+    };
+    validationRules: string[];        // Things to check/enforce
 }
 
-export class DesignPatternService {
+export const PATTERN_LIBRARY: DesignPattern[] = [
+    {
+        name: 'F-Pattern Form',
+        triggers: ['form', 'login', 'signup', 'register', 'checkout', 'contact'],
+        layout: {
+            mode: 'VERTICAL',
+            distribution: 'equal',
+            wrapping: false
+        },
+        hierarchy: {
+            heroElement: false,
+            contentFirst: true,
+            ctaPlacement: 'bottom'
+        },
+        spacing: {
+            internal: 'md',
+            external: 'lg',
+            priority: 'standard'
+        },
+        validationRules: [
+            'All inputs must have labels',
+            'Primary CTA must be at bottom',
+            'No more than one primary CTA'
+        ]
+    },
 
-    /**
-     * Validates and fixes a generated RSNT tree against common design patterns
-     */
-    validateAndFix(root: RSNT_Node, intent: DesignIntent): { fixedRoot: RSNT_Node, violations: Violation[] } {
-        const violations: Violation[] = [];
+    {
+        name: 'Z-Pattern Landing',
+        triggers: ['landing', 'hero', 'marketing', 'splash', 'home'],
+        layout: {
+            mode: 'VERTICAL',
+            distribution: 'hero-features-cta',
+            wrapping: false
+        },
+        hierarchy: {
+            heroElement: true,
+            contentFirst: true,
+            ctaPlacement: 'inline'
+        },
+        spacing: {
+            internal: 'xl',
+            external: '2xl',
+            priority: 'generous'
+        },
+        validationRules: [
+            'Must have hero section at top',
+            'CTAs inline with content',
+            'Large spacing between sections'
+        ]
+    },
 
-        // Clone to avoid mutation side-effects on original if needed, 
-        // but here we modify in place for the 'fix'
-        const fixedRoot = JSON.parse(JSON.stringify(root));
+    {
+        name: 'Grid Gallery',
+        triggers: ['gallery', 'products', 'catalog', 'browse', 'shop', 'items'],
+        layout: {
+            mode: 'HORIZONTAL',
+            distribution: 'equal',
+            wrapping: true
+        },
+        hierarchy: {
+            heroElement: false,
+            contentFirst: false,
+            ctaPlacement: 'bottom'
+        },
+        spacing: {
+            internal: 'lg',
+            external: 'lg',
+            priority: 'standard'
+        },
+        validationRules: [
+            'Items should have equal visual weight',
+            'Consistent spacing between items',
+            'Should wrap to multiple rows'
+        ]
+    },
 
-        // 1. Button Hierarchy Check
-        // Ensure not all buttons in a group are primary
-        this.checkButtonHierarchy(fixedRoot, violations);
+    {
+        name: 'Dashboard Split',
+        triggers: ['dashboard', 'analytics', 'admin', 'overview', 'stats'],
+        layout: {
+            mode: 'HORIZONTAL',
+            distribution: '20-80',
+            wrapping: false
+        },
+        hierarchy: {
+            heroElement: false,
+            contentFirst: false,
+            ctaPlacement: 'top'
+        },
+        spacing: {
+            internal: 'lg',
+            external: 'xl',
+            priority: 'standard'
+        },
+        validationRules: [
+            'Sidebar should be 20-25% width',
+            'Main content area should be flexible',
+            'Key metrics should be prominent'
+        ]
+    },
 
-        // 2. Container Padding Check (Placeholder for future)
-        // this.checkContainerPadding(fixedRoot, violations);
-
-        return { fixedRoot, violations };
+    {
+        name: 'Settings List',
+        triggers: ['settings', 'preferences', 'account', 'profile', 'options'],
+        layout: {
+            mode: 'VERTICAL',
+            distribution: 'equal',
+            wrapping: false
+        },
+        hierarchy: {
+            heroElement: false,
+            contentFirst: true,
+            ctaPlacement: 'bottom'
+        },
+        spacing: {
+            internal: 'md',
+            external: 'lg',
+            priority: 'compact'
+        },
+        validationRules: [
+            'Group related settings together',
+            'Use sections with headings',
+            'Save button at bottom'
+        ]
     }
+];
 
-    private checkButtonHierarchy(node: RSNT_Node, violations: Violation[]) {
-        // Traverse looking for containers with multiple buttons
-        if (node.children && node.children.length > 0) {
-            const buttons = node.children.filter((c: RSNT_Node) =>
-                c.type === 'COMPONENT_INSTANCE' &&
-                (c.name?.toLowerCase().includes('button') || c.semanticRole === 'PrimaryButton' || c.semanticRole === 'SecondaryButton')
-            );
+/**
+ * Detect which pattern best matches the user intent
+ */
+export function detectPattern(intent: string): DesignPattern | null {
+    const lower = intent.toLowerCase();
 
-            if (buttons.length >= 2) {
-                // Check if they are ALL primary
-                const primaries = buttons.filter((b: RSNT_Node) =>
-                    b.properties?.variant === 'primary' ||
-                    b.properties?.type === 'primary' ||
-                    // If no variant specified, it might be defaulting to primary
-                    (!b.properties?.variant && !b.properties?.type)
-                );
+    // Find pattern with most matching triggers
+    let bestMatch: { pattern: DesignPattern; score: number } | null = null;
 
-                if (primaries.length === buttons.length) {
-                    violations.push({
-                        type: 'hierarchy',
-                        severity: 'warning',
-                        message: 'Multiple buttons in a group should not all be primary',
-                        nodeId: node.id
-                    });
+    for (const pattern of PATTERN_LIBRARY) {
+        const matches = pattern.triggers.filter(trigger => lower.includes(trigger));
+        const score = matches.length;
 
-                    // Auto-fix: Keep first/last as primary (depending on platform), make others secondary
-                    // Standard pattern: Primary is usually last or first. Let's assume Primary is the distinct one.
-                    // If we have 2 buttons, 1 primary, 1 secondary.
-
-                    // Fix: Make the *second* button secondary (common pattern: [Cancel] [Confirm]) 
-                    // or [Primary] [Secondary] depending on system.
-                    // Let's adopt a safe default: Keep the LAST one primary, make others secondary?
-                    // Or keep FIRST one primary?
-
-                    // If the user INTENT was specifically "two primary buttons", we shouldn't touch it.
-                    // But we don't have that granularity here easily.
-
-                    // Simple heuristic: Make the first one Primary, others Secondary
-                    // (Or if "Cancel" is detected, make it secondary)
-
-                    buttons.forEach((btn: RSNT_Node, index: number) => {
-                        if (index > 0) { // Keep first one as is, change others
-                            if (!btn.properties) btn.properties = {};
-                            btn.properties.variant = 'secondary';
-
-                            // If text implies negative action, maybe secondary/outline
-                            if (btn.properties.text?.match(/cancel|back|close/i)) {
-                                btn.properties.variant = 'secondary';
-                            }
-                        }
-                    });
-                }
-            }
-
-            // Recurse
-            node.children.forEach((c: RSNT_Node) => this.checkButtonHierarchy(c, violations));
+        if (score > 0 && (!bestMatch || score > bestMatch.score)) {
+            bestMatch = { pattern, score };
         }
     }
+
+    if (bestMatch) {
+        console.log(`[Pattern] Detected: ${bestMatch.pattern.name} (${bestMatch.score} matches)`);
+        return bestMatch.pattern;
+    }
+
+    console.log('[Pattern] No pattern detected, using default');
+    return null;
 }
 
-export const designPatternService = new DesignPatternService();
+/**
+ * Validate RSNT against pattern rules
+ */
+export function validateAgainstPattern(
+    rsnt: RSNT_Node,
+    pattern: DesignPattern,
+    intent: any
+): { valid: boolean; violations: string[] } {
+    const violations: string[] = [];
+
+    for (const rule of pattern.validationRules) {
+        // Check "All inputs must have labels"
+        if (rule.includes('inputs must have labels')) {
+            const inputs = findNodesByType(rsnt, 'input');
+            for (const input of inputs) {
+                if (!input.properties?.label && !input.characters) {
+                    violations.push(`Input "${input.name}" missing label`);
+                }
+            }
+        }
+
+        // Check "Primary CTA must be at bottom"
+        if (rule.includes('Primary CTA must be at bottom')) {
+            const buttons = findNodesByType(rsnt, 'button');
+            const primaryButton = buttons.find(b =>
+                b.properties?.variant === 'primary' ||
+                b.properties?.Style === 'primary'
+            );
+
+            if (primaryButton && rsnt.children) {
+                const lastChild = rsnt.children[rsnt.children.length - 1];
+                if (lastChild.id !== primaryButton.id) {
+                    violations.push('Primary CTA not at bottom (should be last child)');
+                }
+            }
+        }
+
+        // Check "No more than one primary CTA"
+        if (rule.includes('No more than one primary CTA')) {
+            const primaryButtons = findPrimaryButtons(rsnt);
+            if (primaryButtons.length > 1) {
+                violations.push(`Found ${primaryButtons.length} primary CTAs (should be 1)`);
+            }
+        }
+    }
+
+    return {
+        valid: violations.length === 0,
+        violations
+    };
+}
+
+/**
+ * Auto-fix pattern violations
+ */
+export function fixPatternViolations(
+    rsnt: RSNT_Node,
+    pattern: DesignPattern,
+    intent: any
+): { fixed: RSNT_Node; fixes: string[] } {
+    const fixes: string[] = [];
+    // Deep clone to avoid mutating the original tree (spread is shallow and shares children by reference)
+    const fixed: RSNT_Node = JSON.parse(JSON.stringify(rsnt));
+
+    // Fix: Move primary CTA to bottom
+    if (pattern.hierarchy.ctaPlacement === 'bottom' && fixed.children) {
+        const primaryButtons = findPrimaryButtons(fixed);
+        if (primaryButtons.length > 0) {
+            const primaryButton = primaryButtons[0];
+
+            // Remove from current position
+            fixed.children = fixed.children.filter(c => c.id !== primaryButton.id);
+
+            // Add to end
+            fixed.children.push(primaryButton);
+            fixes.push(`Moved primary CTA "${primaryButton.name}" to bottom`);
+        }
+    }
+
+    // Fix: Demote extra primary CTAs to secondary
+    const primaryButtons = findPrimaryButtons(fixed);
+    if (primaryButtons.length > 1) {
+        for (let i = 1; i < primaryButtons.length; i++) {
+            const button = primaryButtons[i];
+            if (button.properties) {
+                button.properties.variant = 'secondary';
+                button.properties.Style = 'secondary';
+                fixes.push(`Demoted "${button.name}" to secondary (only one primary allowed)`);
+            }
+        }
+    }
+
+    return { fixed, fixes };
+}
+
+// Helper functions
+
+function findNodesByType(node: RSNT_Node, type: string): RSNT_Node[] {
+    const results: RSNT_Node[] = [];
+
+    function traverse(n: RSNT_Node) {
+        if (n.type === type || n.name?.toLowerCase().includes(type)) {
+            results.push(n);
+        }
+        n.children?.forEach(traverse);
+    }
+
+    traverse(node);
+    return results;
+}
+
+function findPrimaryButtons(node: RSNT_Node): RSNT_Node[] {
+    const results: RSNT_Node[] = [];
+
+    function traverse(n: RSNT_Node) {
+        if (n.type === 'COMPONENT_INSTANCE' || n.name?.toLowerCase().includes('button')) {
+            if (n.properties?.variant === 'primary' || n.properties?.Style === 'primary') {
+                results.push(n);
+            }
+        }
+        n.children?.forEach(traverse);
+    }
+
+    traverse(node);
+    return results;
+}
+
+/**
+ * Validate and fix RSNT against patterns (convenience method)
+ */
+export function validateAndFix(
+    rsnt: RSNT_Node,
+    intent: any
+): { fixedRoot: RSNT_Node; violations: string[] } {
+    // Detect pattern first
+    const pattern = detectPattern(intent.description || intent.type);
+
+    if (!pattern) {
+        return { fixedRoot: rsnt, violations: [] };
+    }
+
+    const validation = validateAgainstPattern(rsnt, pattern, intent);
+
+    if (validation.valid) {
+        return { fixedRoot: rsnt, violations: [] };
+    }
+
+    // Try to fix
+    const { fixed } = fixPatternViolations(rsnt, pattern, intent);
+
+    return {
+        fixedRoot: fixed,
+        violations: validation.violations
+    };
+}
+
+export const designPatternService = {
+    detectPattern,
+    validateAgainstPattern,
+    fixPatternViolations,
+    validateAndFix
+};
